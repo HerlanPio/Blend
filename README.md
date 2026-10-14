@@ -59,6 +59,16 @@ Blend runs in current versions of Chrome, Microsoft Edge, Brave, Firefox, and Sa
 
 Use a recent browser version for the best experience. If a browser does not support a feature such as automatic Clip playback, the rest of the site remains usable and Clips can be played manually. Photos, videos, and web fonts hosted externally need an internet connection. Profile edits and other saved demo data are stored separately in each browser's local storage, so they are not shared between browsers.
 
+## Publish a public link
+
+The site is static and requires no build step. Deployment configuration is included for GitHub Pages, Netlify, and Vercel:
+
+- **GitHub Pages:** Push the `main` branch to GitHub and set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. The workflow deploys on each push to `main`. Once deployment succeeds, the project URL is `https://herlanpio.github.io/Blend/`.
+- **Netlify:** Import this GitHub repository as a new site. The included `netlify.toml` sets the publish directory to the repository root; leave the build command empty. Netlify will assign the public URL after deployment.
+- **Vercel:** Import this GitHub repository as a new project. The included `vercel.json` sets the output directory to the repository root; leave the build command empty. Vercel will assign the public URL after deployment.
+
+Each deployed URL works in supported browsers. The first deployment requires authorizing the chosen provider and connecting it to the GitHub repository. This demo has no backend, and browser-saved data is separate for each browser and device.
+
 ## Browser-only demo
 
 This project is intentionally a prototype. It includes illustrative profile data, demo conversations, and sample media. It does not include:

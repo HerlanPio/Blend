@@ -51,7 +51,6 @@
   }
   function showModal(content, label) {
     modalRoot.innerHTML = `<div class="modal-backdrop" data-dismiss="modal"><section class="modal-card" role="dialog" aria-modal="true" aria-label="${escape(label)}"><button class="modal-close" data-action="close-modal" aria-label="Close">×</button>${content}</section></div>`;
-    modalRoot.querySelector(".modal-card").addEventListener("click", event => event.stopPropagation());
     modalRoot.querySelector(".modal-close").focus();
   }
   function closeModal() { modalRoot.innerHTML = ""; }
