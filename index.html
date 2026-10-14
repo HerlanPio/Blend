@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#fbf8f3">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="description" content="A more human way to meet: share your world, find your person.">
+    <title>Blend — where your worlds meet</title>
+    <link rel="icon" type="image/svg+xml" href="assets/blend-mark.svg">
+    <link rel="preconnect" href="https://images.unsplash.com">
+    <link rel="stylesheet" href="css/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Main navigation">
+        <a class="wordmark" href="#" data-view="home" aria-label="Blend home">
+          <img class="brand-mark" src="assets/blend-mark.svg"g alt="">
+          <span>blend</span>
+        </a>
+        <button class="profile-switcher" data-view="profile">
+          <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80" alt="">
+          <span><strong id="profile-greeting">Hey, Maya</strong><small>Your world, together</small></span>
+          <span class="switch-chevron">⌄</span>
+        </button>
+        <nav class="side-nav">
+          <p class="nav-label">YOUR SPACE</p>
+          <button class="nav-item active" data-view="home"><span class="nav-icon">⌂</span> Home</button>
+          <button class="nav-item" data-view="vignettes"><span class="nav-icon">▷</span> Clips</button>
+          <button class="nav-item" data-view="discover"><span class="nav-icon">✳</span> Discover <span class="nav-badge">8</span></button>
+          <button class="nav-item" data-view="messages"><span class="nav-icon">◌</span> Messages <span class="unread-dot"></span></button>
+          <button class="nav-item" data-view="saved"><span class="nav-icon">♡</span> Saved</button>
+          <p class="nav-label nav-label-spaced">MAKE IT YOURS</p>
+          <button class="nav-item create-nav" data-action="create"><span class="nav-icon">＋</span> Create a post</button>
+          <button class="nav-item" data-view="profile"><span class="nav-icon">◉</span> My profile</button>
+        </nav>
+        <div class="sidebar-note">
+          <span class="note-sparkle">✳</span>
+          <strong>Good things grow<br>at your own pace.</strong>
+          <span>You're in control of every hello.</span>
+        </div>
+        <button class="settings-link" data-action="privacy"><span>⚙</span> Your privacy</button>
+      </aside>
+
+      <main class="main-column">
+        <header class="topbar">
+          <div class="mobile-brand"><img class="brand-mark" src="assets/blend-mark.svg" alt=""> blend</div>
+          <div class="greeting"><p id="eyebrow">MONDAY, MAY 18</p><h1 id="page-title">Your little corner of the world<span>.</span></h1></div>
+          <div class="top-actions">
+            <button class="icon-button search-button" aria-label="Search" data-action="search">⌕</button>
+            <button class="icon-button notification-button" aria-label="Notifications" data-action="notifications">♧<i></i></button>
+            <button class="top-avatar" data-view="profile" aria-label="Open your profile"><img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=100&q=80" alt="Maya's profile"></button>
+          </div>
+        </header>
+        <div id="view-root" aria-live="polite"></div>
+        <footer class="site-footer"><span>A softer kind of social. Made for the moments that matter.</span><strong>© 2026 Herlan Pio. All rights reserved.</strong></footer>
+      </main>
+
+      <aside class="right-rail" aria-label="Your Blend">
+        <section class="rail-card checkin-card">
+          <div class="rail-heading"><div><span class="tiny-kicker">YOUR BLEND</span><h2>A little check-in</h2></div><span class="checkin-icon">✳</span></div>
+          <p>What are you hoping to find here?</p>
+          <div class="intent-options">
+            <button class="intent-option selected" data-intent="A real connection">♡ <span>A real connection</span></button>
+            <button class="intent-option" data-intent="New friends">✿ <span>New friends</span></button>
+            <button class="intent-option" data-intent="Just exploring">☼ <span>Just exploring</span></button>
+          </div>
+          <div class="privacy-assurance"><span>♧</span> Only share what feels right to you.</div>
+        </section>
+        <section class="rail-section suggestions-section">
+          <div class="rail-title-row"><div><span class="tiny-kicker">COULD BE YOUR PEOPLE</span><h2>Good energy</h2></div><button class="text-button" data-view="discover">See all <span>→</span></button></div>
+          <div id="suggestion-list"></div>
+        </section>
+        <section class="rail-card date-card">
+          <span class="date-spark">✦</span>
+          <div><span class="tiny-kicker">A GENTLE REMINDER</span><p>There is no timeline<br>for finding your person.</p><small>Keep being you. That’s the good part.</small></div>
+        </section>
+        <footer class="rail-footer">A softer kind of social.<br><span>Made for the moments that matter.</span></footer>
+      </aside>
+    </div>
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <button class="mobile-nav-item active" data-view="home"><span>⌂</span>Home</button>
+      <button class="mobile-nav-item" data-view="vignettes"><span>▷</span>Clips</button>
+      <button class="mobile-nav-item" data-view="discover"><span>✳</span>Discover</button>
+      <button class="mobile-create" data-action="create" aria-label="Create a post">＋</button>
+      <button class="mobile-nav-item" data-view="messages"><span>◌</span>Inbox</button>
+      <button class="mobile-nav-item" data-view="profile"><span>◉</span>You</button>
+    </nav>
+    <div id="modal-root"></div>
+    <script src="js/data.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
