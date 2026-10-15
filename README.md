@@ -105,6 +105,7 @@ Then open:
 To view it on a phone, connect the phone and computer to the same Wi-Fi network and open the computer's local network IP on the same port.
 
 7. 🚀 Live Demo
+
 🔗 Live Site: https://blend-web.netlify.app/
 
 ## Project purpose
