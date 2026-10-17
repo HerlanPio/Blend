@@ -5,12 +5,15 @@
   const root = document.querySelector("#view-root");
   const modalRoot = document.querySelector("#modal-root");
   const suggestions = document.querySelector("#suggestion-list");
+  const backend = window.BlendBackend;
+  const demoPeople = [...data.people];
   const storeKey = "blend.rebuilt.";
   const read = (key, fallback) => {
     try { return JSON.parse(localStorage.getItem(storeKey + key)) ?? fallback; }
     catch (error) { console.warn(`Could not read ${key} from local storage.`, error); return fallback; }
   };
   const write = (key, value) => {
+    if (state.remote) return;
     try { localStorage.setItem(storeKey + key, JSON.stringify(value)); }
     catch (error) { console.error(`Could not save ${key} to local storage.`, error); toast("Could not save this change on your device."); }
   };
@@ -19,6 +22,14 @@
     filter: "For you",
     query: "",
     selectedPerson: "sofia",
+    myId: backend.session?.user?.id || "maya",
+    remote: false,
+    authMode: "login",
+    mediaRefreshTimer: null,
+    remoteProfiles: [],
+    remoteStories: [],
+    followers: [],
+    conversationIds: {},
     profile: read("profile", { name: "Maya Chen", age: "28", occupation: "Product designer", city: "Brooklyn", bio: "Designing a life with room for Sunday markets, overwatered plants, and people who make anywhere feel like home.", image: "" }),
     posts: read("posts", []),
     likes: read("likes", []),
@@ -31,13 +42,13 @@
 
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
   const personFor = id => data.people.find(person => person.id === id) || data.people[0];
-  const profileImage = () => state.profile.image || photo(personFor("maya").image, 160);
+  const profileImage = () => state.profile.image || photo(personFor(state.myId).image, 160);
   function photo(source, width = 640) {
     if (/^(https?:|data:|blob:)/i.test(source || "")) return escape(source);
     return `https://images.unsplash.com/${String(source || "").startsWith("photo-") ? source : `photo-${source}`}?auto=format&fit=crop&w=${width}&q=82`;
   }
   function avatar(person, size = 120) {
-    const src = person.id === "maya" ? profileImage() : photo(person.image, size);
+    const src = person.id === state.myId ? profileImage() : photo(person.image, size);
     return `<img class="avatar" src="${src}" alt="${escape(person.name)}" loading="lazy">`;
   }
   function toast(message) {
@@ -54,75 +65,210 @@
     modalRoot.querySelector(".modal-close").focus();
   }
   function closeModal() { modalRoot.innerHTML = ""; }
-  function allPosts() { return [...state.posts, ...data.posts]; }
+  function allPosts() { return state.remote ? [...state.posts] : [...state.posts, ...data.posts]; }
+  function communityPeople() {
+    return state.remote
+      ? state.remoteProfiles.filter(person => person.id !== state.myId)
+      : data.people.filter(person => person.id !== state.myId);
+  }
+  function profileFromRemote(profile) {
+    return {
+      id: profile.id,
+      name: profile.display_name,
+      age: profile.age || "",
+      occupation: profile.occupation || "",
+      city: profile.city || "",
+      bio: profile.bio || "",
+      image: profile.avatar_url || "",
+      avatarPath: profile.avatar_path || "",
+      interests: [],
+      remote: true
+    };
+  }
+  function postFromRemote(post) {
+    return {
+      id: post.id,
+      person: post.author_id,
+      image: post.media_url,
+      mediaPath: post.media_path || "",
+      caption: post.caption,
+      location: post.location,
+      audience: post.audience,
+      likes: post.likes_count,
+      comments: post.comments_count,
+      time: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(post.created_at)),
+      tags: [],
+      remote: true
+    };
+  }
+  function installRemoteState(remote) {
+    const ownProfile = remote.profile;
+    if (!ownProfile) throw new Error("Your account profile was not found. Please contact support.");
+    state.remote = true;
+    state.myId = remote.user.id;
+    state.profile = {
+      name: ownProfile.display_name,
+      age: ownProfile.age || "",
+      occupation: ownProfile.occupation || "",
+      city: ownProfile.city || "",
+      bio: ownProfile.bio || "",
+      image: ownProfile.avatar_url || "",
+      avatarPath: ownProfile.avatar_path || "",
+      intent: ownProfile.intent,
+      remote: true
+    };
+    state.intent = ownProfile.intent || "A real connection";
+    const remoteProfiles = remote.profiles.map(profileFromRemote);
+    state.remoteProfiles = remoteProfiles;
+    data.people = remoteProfiles;
+    state.posts = remote.posts.map(postFromRemote).reverse();
+    state.remoteStories = remote.stories.map(story => ({
+      id: story.id,
+      person: story.author_id,
+      image: story.media_url,
+      mediaPath: story.media_path || "",
+      type: story.media_type,
+      caption: story.caption
+    }));
+    state.likes = remote.likedPostIds;
+    state.saved = remote.savedPostIds;
+    state.connections = remote.follows.filter(follow => follow.follower_id === state.myId).map(follow => follow.followee_id);
+    state.followers = remote.follows.filter(follow => follow.followee_id === state.myId).map(follow => follow.follower_id);
+    state.comments = remote.comments.reduce((comments, item) => {
+      (comments[item.post_id] ||= []).push({
+        content: item.content,
+        author: item.author?.display_name || "Blend member"
+      });
+      return comments;
+    }, {});
+    state.conversationIds = {};
+    state.messages = {};
+    remote.conversations.forEach(conversation => {
+      const personId = conversation.person.id;
+      state.conversationIds[personId] = conversation.id;
+      state.messages[personId] = [];
+      (state.messages.$conversations ||= {})[conversation.id] = personId;
+    });
+    remote.messages.forEach(message => {
+      const personId = state.messages.$conversations?.[message.conversation_id];
+      if (personId) state.messages[personId].push({
+        content: message.content,
+        mine: message.sender_id === state.myId
+      });
+    });
+    delete state.messages.$conversations;
+    state.selectedPerson = communityPeople()[0]?.id || "";
+    const ownStory = remote.stories.find(story => story.author_id === state.myId);
+    if (ownStory) {
+      state.profile.storyId = ownStory.id;
+      state.profile.storyImage = ownStory.media_url;
+      state.profile.storyPath = ownStory.media_path;
+      state.profile.storyType = ownStory.media_type;
+      state.profile.storyCaption = ownStory.caption;
+    }
+  }
+  async function refreshRemoteState() {
+    installRemoteState(await backend.bootstrap());
+    render();
+    window.clearTimeout(state.mediaRefreshTimer);
+    state.mediaRefreshTimer = window.setTimeout(() => {
+      refreshRemoteState().catch(error => {
+        console.error("Could not refresh Blend media links.", error);
+        toast("Could not refresh your Blend media. Please check your connection.");
+      });
+    }, 50 * 60 * 1000);
+  }
+  function isRemoteId(id) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id || "");
+  }
+  function accountModal(message = "") {
+    if (backend.isAuthenticated) {
+      showModal(`<span class="section-kicker">YOUR BLEND ACCOUNT</span><h2>You’re signed in.</h2><p class="modal-description">${escape(backend.session.user?.email || "Your account")}</p><p class="upload-error" ${message ? "" : "hidden"}>${escape(message)}</p><button class="primary-button" data-action="sign-out">Sign out</button>`, "Your account");
+      return;
+    }
+    showModal(`<span class="section-kicker">YOUR BLEND ACCOUNT</span><h2>Make your world yours.</h2><p class="modal-description">Sign in to keep your profile, stories, moments, and messages in sync across devices.</p><div class="auth-mode"><button class="${state.authMode !== "signup" ? "active" : ""}" data-action="auth-mode" data-mode="login">Sign in</button><button class="${state.authMode === "signup" ? "active" : ""}" data-action="auth-mode" data-mode="signup">Create account</button></div><form id="account-form" class="create-form">${state.authMode === "signup" ? '<label>Your name<input name="display_name" required maxlength="80" autocomplete="name"></label>' : ""}<label>Email<input name="email" type="email" required autocomplete="email"></label><label>Password<input name="password" type="password" required ${state.authMode === "signup" ? 'minlength="10"' : ""} autocomplete="${state.authMode === "signup" ? "new-password" : "current-password"}"></label><p class="upload-error" ${message ? "" : "hidden"}>${escape(message)}</p><button class="primary-button" type="submit">${state.authMode === "signup" ? "Create my account" : "Sign in"} ↗</button></form>`, "Sign in to Blend");
+  }
   function suggestionCard(person) {
     const connected = state.connections.includes(person.id);
     return `<article class="suggestion-card">${avatar(person)}<strong>${escape(person.name)}</strong><small>${person.age} · ${escape(person.city)}</small><button class="primary-button" data-action="hello" data-person-id="${person.id}">${connected ? "Hello sent ✓" : "Say hello ♡"}</button></article>`;
   }
   function renderSuggestions() {
-    suggestions.innerHTML = data.people.filter(person => person.id !== "maya").slice(0, 3).map(person => `<div class="suggestion-person">${avatar(person, 90)}<span><strong>${escape(person.name)}</strong><small>${person.age} · ${escape(person.city)}</small></span></div>`).join("");
+    suggestions.innerHTML = communityPeople().slice(0, 3).map(person => `<div class="suggestion-person">${avatar(person, 90)}<span><strong>${escape(person.name)}</strong><small>${person.age} · ${escape(person.city)}</small></span></div>`).join("");
   }
   function storyButton(story, person, own = false) {
     return `<button class="story-item" data-action="open-story" data-story-id="${escape(story.id)}" data-person-id="${escape(person.id)}" aria-label="View ${escape(person.name)}'s story"><span class="story-avatar"><img src="${photo(story.image, 160)}" alt="" loading="lazy">${own ? '<span class="story-add">＋</span>' : ""}</span><span>${own ? "Your story" : escape(person.name.split(" ")[0])}</span></button>`;
   }
   function renderStories() {
-    const mayaStory = state.profile.storyImage ? { id: "story-maya", image: state.profile.storyImage } : { id: "story-maya", image: personFor("maya").image };
-    return `<section class="content-card"><span class="section-kicker">LITTLE WINDOWS INTO THEIR DAY</span><div class="section-title-row"><h2 class="section-title">Stories <span>✿</span></h2><button class="subtle-button" data-action="create-story">＋ Add story</button></div><div class="story-list">${storyButton(mayaStory, personFor("maya"), true)}${data.stories.map(story => storyButton(story, personFor(story.person))).join("")}</div></section>`;
+    const ownStory = state.profile.storyImage ? { id: state.profile.storyId || "story-maya", image: state.profile.storyImage, type: state.profile.storyType, caption: state.profile.storyCaption } : { id: "story-maya", image: personFor(state.myId).image };
+    const otherStories = state.remote ? state.remoteStories : data.stories;
+    return `<section class="content-card"><span class="section-kicker">LITTLE WINDOWS INTO THEIR DAY</span><div class="section-title-row"><h2 class="section-title">Stories <span>✿</span></h2><button class="subtle-button" data-action="create-story">＋ Add story</button></div><div class="story-list">${storyButton(ownStory, personFor(state.myId), true)}${otherStories.filter(story => story.person !== state.myId).map(story => storyButton(story, personFor(story.person))).join("")}</div></section>`;
   }
   function renderSuggestionPanel() {
-    return `<section class="content-card"><div class="section-title-row"><div><span class="section-kicker">GOOD PEOPLE, WITH NO PRESSURE</span><h2 class="section-title">Profile suggestions</h2></div><button class="text-button" data-view="discover">Discover more ↗</button></div><div class="suggestion-grid">${data.people.filter(person => person.id !== "maya").slice(0, 3).map(suggestionCard).join("")}</div></section>`;
+    return `<section class="content-card"><div class="section-title-row"><div><span class="section-kicker">GOOD PEOPLE, WITH NO PRESSURE</span><h2 class="section-title">Profile suggestions</h2></div><button class="text-button" data-view="discover">Discover more ↗</button></div><div class="suggestion-grid">${communityPeople().slice(0, 3).map(suggestionCard).join("") || '<p class="empty-state">New people will appear here as they join Blend.</p>'}</div></section>`;
   }
   function renderPost(post) {
     const person = personFor(post.person);
     const liked = state.likes.includes(post.id);
     const saved = state.saved.includes(post.id);
     const comments = state.comments[post.id] || [];
-    return `<article class="post-card" data-post="${escape(post.id)}"><div class="post-head">${avatar(person, 100)}<span class="post-author"><strong>${escape(person.name)}</strong><small>${escape(post.location || person.city)} · ${escape(post.time)}</small></span><button class="icon-plain" data-action="post-options" data-post-id="${escape(post.id)}" aria-label="Post options">•••</button></div>${post.image ? `<img class="post-image" src="${photo(post.image, 1000)}" alt="Photo shared by ${escape(person.name)}" loading="lazy">` : ""}<div class="post-actions"><button class="${liked ? "liked" : ""}" data-action="like" data-post-id="${escape(post.id)}" aria-label="${liked ? "Unlike" : "Like"} post">${liked ? "♥" : "♡"}</button><button data-action="comment" data-post-id="${escape(post.id)}" aria-label="Comment">◯</button><button data-action="share" data-post-id="${escape(post.id)}" aria-label="Share">↗</button><button class="post-more ${saved ? "saved" : ""}" data-action="save" data-post-id="${escape(post.id)}" aria-label="${saved ? "Unsave" : "Save"}">${saved ? "▣" : "▢"}</button></div><div class="post-copy"><strong class="like-count">${(post.likes || 0) + (liked ? 1 : 0)} appreciations</strong><p><strong>${escape(person.name.split(" ")[0])}</strong> ${escape(post.caption)}</p><div class="post-tags">${(post.tags || []).map(tag => `<button data-tag="${escape(tag)}">#${escape(tag.replace(/\s/g, ""))}</button>`).join("")}</div><button class="comments-link" data-action="comment" data-post-id="${escape(post.id)}">View all ${(post.comments || 0) + comments.length} notes</button><div class="comment-list">${comments.map(comment => `<p><strong>${escape(state.profile.name.split(" ")[0])}</strong> ${escape(comment)}</p>`).join("")}</div><form class="quick-comment" data-comment-form="${escape(post.id)}"><input aria-label="Write a comment" placeholder="Leave a kind note…"><button type="submit" aria-label="Send comment">↑</button></form></div></article>`;
+    const likeCount = (post.likes || 0) + (!post.remote && liked ? 1 : 0);
+    const commentCount = post.remote ? post.comments || 0 : (post.comments || 0) + comments.length;
+    return `<article class="post-card" data-post="${escape(post.id)}"><div class="post-head">${avatar(person, 100)}<span class="post-author"><strong>${escape(person.name)}</strong><small>${escape(post.location || person.city)} · ${escape(post.time)}</small></span><button class="icon-plain" data-action="post-options" data-post-id="${escape(post.id)}" aria-label="Post options">•••</button></div>${post.image ? `<img class="post-image" src="${photo(post.image, 1000)}" alt="Photo shared by ${escape(person.name)}" loading="lazy">` : ""}<div class="post-actions"><button class="${liked ? "liked" : ""}" data-action="like" data-post-id="${escape(post.id)}" aria-label="${liked ? "Unlike" : "Like"} post">${liked ? "♥" : "♡"}</button><button data-action="comment" data-post-id="${escape(post.id)}" aria-label="Comment">◯</button><button data-action="share" data-post-id="${escape(post.id)}" aria-label="Share">↗</button><button class="post-more ${saved ? "saved" : ""}" data-action="save" data-post-id="${escape(post.id)}" aria-label="${saved ? "Unsave" : "Save"}">${saved ? "▣" : "▢"}</button></div><div class="post-copy"><strong class="like-count">${likeCount} appreciations</strong><p><strong>${escape(person.name.split(" ")[0])}</strong> ${escape(post.caption)}</p><div class="post-tags">${(post.tags || []).map(tag => `<button data-tag="${escape(tag)}">#${escape(tag.replace(/\s/g, ""))}</button>`).join("")}</div><button class="comments-link" data-action="comment" data-post-id="${escape(post.id)}">View all ${commentCount} notes</button><div class="comment-list">${comments.map(comment => `<p><strong>${escape(typeof comment === "string" ? state.profile.name.split(" ")[0] : comment.author)}</strong> ${escape(typeof comment === "string" ? comment : comment.content)}</p>`).join("")}</div><form class="quick-comment" data-comment-form="${escape(post.id)}"><input aria-label="Write a comment" placeholder="Leave a kind note…"><button type="submit" aria-label="Send comment">↑</button></form></div></article>`;
   }
   function renderHome() {
     let posts = [...allPosts()].reverse();
     if (state.filter === "Following") {
-      const followed = new Set(["maya", ...state.connections]);
+      const followed = new Set([state.myId, ...state.connections]);
       posts = posts.filter(post => followed.has(post.person));
     }
     return `${renderStories()}${renderSuggestionPanel()}<section class="feed-section"><div class="section-title-row"><div><span class="section-kicker">A GOOD PLACE TO BEGIN</span><h2 class="section-title">Your feed</h2></div><button class="subtle-button" data-action="create">＋ Create a post</button></div><div class="feed-tabs">${["For you", "Following"].map(filter => `<button class="${state.filter === filter ? "active" : ""}" data-filter="${filter}">${filter}</button>`).join("")}</div>${posts.length ? posts.map(renderPost).join("") : '<section class="content-card empty-state">Your Following feed will show posts from people you connect with.</section>'}</section>`;
   }
   function renderDiscover() {
     const query = state.query.trim().toLowerCase();
-    const people = data.people.filter(person => person.id !== "maya" && (!query || `${person.name} ${person.occupation} ${person.city} ${person.interests.join(" ")}`.toLowerCase().includes(query)));
-    return `<div class="view-intro"><span class="section-kicker">GOOD ENERGY, NO SWIPING RUSH</span><h2>Make room for a new hello.</h2><p>Meet people who might feel like your kind of people. Take your time.</p></div><label class="search-field" aria-label="Search people">⌕<input data-discover-search type="search" value="${escape(state.query)}" placeholder="Search names, interests, places…"></label><div class="discover-grid" style="margin-top:15px">${people.length ? people.map(person => `<article class="person-card">${avatar(person, 600).replace('class="avatar"', 'class="person-cover"')}<div class="person-card-body"><h3>${escape(person.name)}, ${person.age}</h3><small>${escape(person.occupation)} · ${escape(person.city)}</small><p>${escape(person.bio)}</p><div class="interest-list">${person.interests.map(interest => `<span>${escape(interest)}</span>`).join("")}</div><button class="primary-button" data-action="hello" data-person-id="${person.id}">${state.connections.includes(person.id) ? "Hello sent ✓" : "Say hello ♡"}</button></div></article>`).join("") : '<p class="empty-state">No profiles match yet. Try another search.</p>'}</div>${renderSuggestionPanel()}`;
+    const people = communityPeople().filter(person => !query || `${person.name} ${person.occupation} ${person.city} ${person.interests.join(" ")}`.toLowerCase().includes(query));
+    return `<div class="view-intro"><span class="section-kicker">GOOD ENERGY, NO SWIPING RUSH</span><p>Meet people who might feel like your kind of people. Take your time.</p></div><label class="search-field" aria-label="Search people">⌕<input data-discover-search type="search" value="${escape(state.query)}" placeholder="Search names, interests, places…"></label><div class="discover-grid" style="margin-top:15px">${people.length ? people.map(person => `<article class="person-card">${avatar(person, 600).replace('class="avatar"', 'class="person-cover"')}<div class="person-card-body"><h3>${escape(person.name)}, ${person.age}</h3><small>${escape(person.occupation)} · ${escape(person.city)}</small><p>${escape(person.bio)}</p><div class="interest-list">${person.interests.map(interest => `<span>${escape(interest)}</span>`).join("")}</div><button class="primary-button" data-action="hello" data-person-id="${person.id}">${state.connections.includes(person.id) ? "Hello sent ✓" : "Say hello ♡"}</button></div></article>`).join("") : '<p class="empty-state">No profiles match yet. Try another search.</p>'}</div>${renderSuggestionPanel()}`;
   }
   function renderClips() {
-    return `<div class="view-intro"><span class="section-kicker">SHORT MOMENTS, REAL PEOPLE</span><h2>A few good Clips.</h2><p>Little films from people living their everyday stories.</p></div><div class="vignettes-list">${data.vignettes.map((clip, index) => {
+    return `<div class="view-intro"><span class="section-kicker">SHORT MOMENTS, REAL PEOPLE</span><h2>Clips.</h2><p>Little films from people living their everyday stories.</p></div><div class="vignettes-list">${data.vignettes.map((clip, index) => {
       const person = personFor(clip.person);
       return `<article class="vignette-card" data-clip="${clip.id}"><img class="vignette-poster" src="${photo(clip.poster, 600)}" alt="" loading="lazy"><video class="vignette-video" src="${escape(clip.video)}" poster="${photo(clip.poster, 600)}" muted playsinline webkit-playsinline preload="none" aria-label="${escape(clip.caption)}"></video><div class="vignette-gradient"></div><div class="vignette-topline"><span>✳ A LITTLE FILM</span><span>UP TO 1 MIN · ${String(index + 1).padStart(2, "0")}</span></div><div class="vignette-copy"><button class="vignette-author" data-person="${person.id}">${avatar(person, 80)}<span><strong>${escape(person.name)}</strong><small>${escape(person.occupation)}</small></span></button><p>${escape(clip.caption)}</p><div>${clip.tags.map(tag => `#${escape(tag.replace(/\s/g, ""))} `).join("")}</div></div><div class="vignette-actions"><button class="vignette-action" data-action="toggle-clip" aria-label="Play or pause Clip"><span>▷</span><small>Play</small></button><button class="vignette-action" data-action="share" data-post-id="${clip.id}" aria-label="Share Clip"><span>↗</span><small>Share</small></button></div></article>`;
     }).join("")}</div>`;
   }
   function renderProfile() {
-    const ownPosts = state.posts.filter(post => post.person === "maya");
-    const followerPeople = [personFor("sofia"), personFor("dev"), personFor("lena")];
-    return `<section class="content-card"><div class="profile-cover"></div><div class="profile-summary">${avatar(personFor("maya"), 200)}<button class="subtle-button" data-action="edit-profile" style="float:right;margin-top:8px">Edit profile</button><h2>${escape(state.profile.name)}${state.profile.age ? `, ${escape(state.profile.age)}` : ""}</h2><small>${escape(state.profile.occupation)} · ${escape(state.profile.city)}</small><p>${escape(state.profile.bio)}</p><div class="profile-stats"><button class="profile-stat" data-action="show-people" data-list="followers"><strong>${followerPeople.length}</strong><span>Followers</span></button><button class="profile-stat" data-action="show-people" data-list="following"><strong>${state.connections.length}</strong><span>Following</span></button><button class="profile-stat"><strong>${ownPosts.length}</strong><span>Moments</span></button></div></div></section>${renderSuggestionPanel()}<section class="content-card"><div class="section-title-row"><div><span class="section-kicker">YOUR LITTLE COLLECTION</span><h2 class="section-title">Your moments</h2></div><button class="subtle-button" data-action="create">＋ Add a moment</button></div>${ownPosts.length ? `<div class="profile-tiles">${ownPosts.map(post => `<img class="profile-tile" src="${photo(post.image, 400)}" alt="${escape(post.caption)}">`).join("")}</div>` : '<p class="empty-state">Your first moment can start right here.</p>'}</section>`;
+    const ownPosts = state.posts.filter(post => post.person === state.myId);
+    const followerPeople = state.remote ? state.followers.map(personFor) : [personFor("sofia"), personFor("dev"), personFor("lena")];
+    return `<section class="content-card"><div class="profile-cover"></div><div class="profile-summary">${avatar(personFor(state.myId), 200)}<button class="subtle-button" data-action="edit-profile" style="float:right;margin-top:8px">Edit profile</button><h2>${escape(state.profile.name)}${state.profile.age ? `, ${escape(state.profile.age)}` : ""}</h2><small>${escape(state.profile.occupation)} · ${escape(state.profile.city)}</small><p>${escape(state.profile.bio)}</p><div class="profile-stats"><button class="profile-stat" data-action="show-people" data-list="followers"><strong>${followerPeople.length}</strong><span>Followers</span></button><button class="profile-stat" data-action="show-people" data-list="following"><strong>${state.connections.length}</strong><span>Following</span></button><button class="profile-stat"><strong>${ownPosts.length}</strong><span>Moments</span></button></div></div></section>${renderSuggestionPanel()}<section class="content-card"><div class="section-title-row"><div><span class="section-kicker">YOUR LITTLE COLLECTION</span><h2 class="section-title">Your moments</h2></div><button class="subtle-button" data-action="create">＋ Add a moment</button></div>${ownPosts.length ? `<div class="profile-tiles">${ownPosts.map(post => `<img class="profile-tile" src="${photo(post.image, 400)}" alt="${escape(post.caption)}">`).join("")}</div>` : '<p class="empty-state">Your first moment can start right here.</p>'}</section>`;
   }
   function messagesFor(personId) {
-    return state.messages[personId] || ["Hi! I liked what you shared about finding joy in the little things.", "Thank you! That really made my day. What have you been enjoying lately?"];
+    if (state.messages[personId]?.length) return state.messages[personId];
+    return state.remote ? [] : ["Hi! I liked what you shared about finding joy in the little things.", "Thank you! That really made my day. What have you been enjoying lately?"];
   }
   function renderMessages() {
-    const people = data.people.filter(person => person.id !== "maya");
-    const selected = personFor(state.selectedPerson);
-    return `<div class="view-intro"><span class="section-kicker">KIND WORDS, AT YOUR OWN PACE</span><h2>A thoughtful hello goes a long way.</h2></div><div class="messages-layout"><nav class="conversation-list" aria-label="Conversations">${people.map(person => { const messages = messagesFor(person.id); return `<button class="conversation-item ${person.id === selected.id ? "active" : ""}" data-action="select-conversation" data-person-id="${person.id}">${avatar(person, 90)}<span><strong>${escape(person.name)}</strong><small>${escape(messages[messages.length - 1] || "Say hello")}</small></span></button>`; }).join("")}</nav><section class="thread-view"><div class="thread-heading">${avatar(selected, 90)}<strong>${escape(selected.name)}</strong></div><div class="thread-messages">${messagesFor(selected.id).map((message, index) => `<div class="bubble ${index % 2 ? "mine" : ""}">${escape(message)}</div>`).join("")}</div><form class="message-composer" data-message-form="${selected.id}"><input aria-label="Write a message" placeholder="Write a kind note…"><button type="submit" aria-label="Send message">↑</button></form></section></div>`;
+    const people = communityPeople();
+    if (!people.length) return '<div class="view-intro"><span class="section-kicker">KIND WORDS, AT YOUR OWN PACE</span></div><section class="content-card empty-state">Messaging will be ready when more people join Blend.</section>';
+    const selected = people.find(person => person.id === state.selectedPerson) || people[0];
+    state.selectedPerson = selected.id;
+    const conversationPeople = state.remote ? people.filter(person => state.conversationIds[person.id]) : people;
+    return `<div class="view-intro"><span class="section-kicker">KIND WORDS, AT YOUR OWN PACE</span></div><div class="messages-layout"><nav class="conversation-list" aria-label="Conversations">${conversationPeople.map(person => { const messages = messagesFor(person.id); const last = messages[messages.length - 1]; return `<button class="conversation-item ${person.id === selected.id ? "active" : ""}" data-action="select-conversation" data-person-id="${person.id}">${avatar(person, 90)}<span><strong>${escape(person.name)}</strong><small>${escape(typeof last === "string" ? last : last?.content || "Say hello")}</small></span></button>`; }).join("") || '<p class="empty-state">Choose a profile and send a kind hello to start a conversation.</p>'}</nav><section class="thread-view"><div class="thread-heading">${avatar(selected, 90)}<strong>${escape(selected.name)}</strong></div><div class="thread-messages">${messagesFor(selected.id).map((message, index) => `<div class="bubble ${typeof message === "string" ? (index % 2 ? "mine" : "theirs") : (message.mine ? "mine" : "theirs")}">${escape(typeof message === "string" ? message : message.content)}</div>`).join("")}</div><form class="message-composer" data-message-form="${selected.id}"><input aria-label="Write a message" placeholder="Write a kind note…"><button type="submit" aria-label="Send message">↑</button></form></section></div>`;
   }
   function renderSaved() {
     const savedPosts = allPosts().filter(post => state.saved.includes(post.id));
-    return `<div class="view-intro"><span class="section-kicker">LITTLE THINGS WORTH KEEPING</span><h2>Your saved moments.</h2><p>Posts you have tucked away for later.</p></div>${savedPosts.length ? savedPosts.map(renderPost).join("") : '<section class="content-card empty-state">No saved posts yet. Tap the bookmark on a post to keep it here.</section>'}`;
+    return `<div class="view-intro"><h2>Your saved moments.</h2><p>Posts you have tucked away for later.</p></div>${savedPosts.length ? savedPosts.map(renderPost).join("") : '<section class="content-card empty-state">No saved posts yet. Tap the bookmark on a post to keep it here.</section>'}`;
   }
   function render() {
     const views = { home: renderHome, discover: renderDiscover, vignettes: renderClips, profile: renderProfile, messages: renderMessages, saved: renderSaved };
-    const titles = { home: "Your little corner of the world", discover: "Make room for a new hello", vignettes: "A few good Clips", profile: "This is your story", messages: "A thoughtful hello goes a long way", saved: "Little things worth keeping" };
-    document.querySelector("#page-title").innerHTML = `${escape(titles[state.view] || titles.home)}<span>.</span>`;
+    const titles = { home: "Your little corner of the world", discover: "Discover", vignettes: "Clips", profile: "This is your story", messages: "Messages", saved: "Saved" };
+    const pageTitle = document.querySelector("#page-title");
+    const compactHeader = ["vignettes", "discover", "messages", "saved"].includes(state.view);
+    pageTitle.hidden = compactHeader;
+    document.querySelector(".topbar").classList.toggle("compact-view", compactHeader);
+    pageTitle.innerHTML = `${escape(titles[state.view] || titles.home)}<span>.</span>`;
     document.querySelector("#eyebrow").textContent = new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(new Date()).toUpperCase();
     document.querySelector(".top-avatar img").src = profileImage();
     document.querySelector(".top-avatar img").alt = `${state.profile.name}'s profile`;
     document.querySelector("#profile-greeting").textContent = `Hey, ${state.profile.name.split(/\s+/)[0]}`;
+    document.querySelector('[data-action="account"].settings-link').innerHTML = `<span>♙</span> ${backend.isAuthenticated ? "Account & sign out" : "Account & sign in"}`;
+    document.querySelectorAll("[data-intent]").forEach(button => button.classList.toggle("selected", button.dataset.intent === state.intent));
     document.querySelectorAll("[data-view]").forEach(button => button.classList.toggle("active", button.dataset.view === state.view));
     root.innerHTML = (views[state.view] || renderHome)();
     renderSuggestions();
@@ -148,7 +294,9 @@
     });
   }
   function showPeople(which) {
-    const people = which === "followers" ? [personFor("sofia"), personFor("dev"), personFor("lena")] : state.connections.map(personFor);
+    const people = which === "followers"
+      ? (state.remote ? state.followers : ["sofia", "dev", "lena"]).map(personFor)
+      : state.connections.map(personFor);
     showModal(`<span class="section-kicker">YOUR BLEND COMMUNITY</span><h2>${which === "followers" ? "Followers" : "Following"} · ${people.length}</h2>${people.length ? people.map(person => `<div class="profile-person-row">${avatar(person)}<span><strong>${escape(person.name)}</strong><small>${escape(person.occupation)} · ${escape(person.city)}</small></span></div>`).join("") : '<p class="empty-state">Your list will grow as you connect.</p>'}`, which);
   }
   function createPostForm() {
@@ -207,25 +355,66 @@
     if (button.dataset.view) { state.view = button.dataset.view; state.query = ""; render(); window.scrollTo(0, 0); return; }
     if (button.dataset.filter) { state.filter = button.dataset.filter; render(); return; }
     if (button.dataset.action === "close-modal") { closeModal(); return; }
+    if (button.dataset.action === "account") { state.authMode = "login"; accountModal(); return; }
+    if (button.dataset.action === "auth-mode") { state.authMode = button.dataset.mode; accountModal(); return; }
+    if (button.dataset.action === "sign-out") {
+      try {
+        await backend.signOut();
+        state.remote = false;
+        window.clearTimeout(state.mediaRefreshTimer);
+        state.myId = "maya";
+        state.followers = [];
+        state.conversationIds = {};
+        state.remoteStories = [];
+        data.people = [...demoPeople];
+        state.remoteProfiles = [];
+        state.profile = read("profile", { name: "Maya Chen", age: "28", occupation: "Product designer", city: "Brooklyn", bio: "", image: "" });
+        state.posts = read("posts", []);
+        state.likes = read("likes", []);
+        state.saved = read("saved", []);
+        state.connections = read("connections", []);
+        state.comments = read("comments", {});
+        state.messages = read("messages", {});
+        state.intent = read("intent", "A real connection");
+        state.view = "home";
+        closeModal(); render(); toast("You have signed out.");
+      } catch (error) { accountModal(error.message); }
+      return;
+    }
     if (button.dataset.action === "create") { showModal(createPostForm(), "Create a post"); return; }
     if (button.dataset.action === "create-story") { openCreateStory(); return; }
     if (button.dataset.action === "edit-profile") {
-      showModal(`<span class="section-kicker">LET YOUR PROFILE FEEL LIKE YOU</span><h2>Edit your profile.</h2><form id="profile-form" class="create-form"><label>Name<input name="name" required value="${escape(state.profile.name)}"></label><label>Age<input name="age" type="number" min="18" max="99" value="${escape(state.profile.age)}"></label><label>Profession<input name="occupation" value="${escape(state.profile.occupation)}"></label><label>City<input name="city" value="${escape(state.profile.city)}"></label><label>A little about you<textarea name="bio" maxlength="280">${escape(state.profile.bio)}</textarea></label><label>Profile photo<input name="photo" type="file" accept="image/*" capture="user"></label><p class="upload-error" hidden></p><button class="primary-button" type="submit">Save my details ✓</button></form>`, "Edit your profile"); return;
+      showModal(`<span class="section-kicker">LET YOUR PROFILE FEEL LIKE YOU</span><h2>Edit your profile.</h2><form id="profile-form" class="create-form"><label>Name<input name="name" required value="${escape(state.profile.name)}"></label><label>Age<input name="age" type="number" min="18" max="${state.remote ? 120 : 99}" value="${escape(state.profile.age)}"></label><label>Profession<input name="occupation" value="${escape(state.profile.occupation)}"></label><label>City<input name="city" value="${escape(state.profile.city)}"></label><label>A little about you<textarea name="bio" maxlength="${state.remote ? 500 : 280}">${escape(state.profile.bio)}</textarea></label><label>Profile photo<input name="photo" type="file" accept="image/*" capture="user"></label><p class="upload-error" hidden></p><button class="primary-button" type="submit">Save my details ✓</button></form>`, "Edit your profile"); return;
     }
     if (button.dataset.action === "toggle-location") { const label = modalRoot.querySelector(".location-field"); label.hidden = !label.hidden; if (!label.hidden) label.querySelector("input").focus(); return; }
     if (button.dataset.action === "hello") {
       const id = button.dataset.personId;
       if (state.connections.includes(id)) { toast("You have already sent a hello."); return; }
+      try {
+        if (state.remote && isRemoteId(id)) {
+          await backend.setFollowing(id, true);
+          const conversation = await backend.startConversation(id);
+          state.conversationIds[id] = conversation.id;
+          state.messages[id] ||= [];
+        }
+      }
+      catch (error) { toast(error.message); return; }
       state.connections.push(id); write("connections", state.connections); render(); toast(`A friendly hello is on its way to ${personFor(id).name.split(" ")[0]}.`); return;
     }
     if (button.dataset.action === "like") {
       const id = button.dataset.postId;
-      state.likes = state.likes.includes(id) ? state.likes.filter(item => item !== id) : [...state.likes, id];
+      const liked = !state.likes.includes(id);
+      try { if (state.remote && isRemoteId(id)) await backend.setLike(id, liked); }
+      catch (error) { toast(error.message); return; }
+      state.likes = liked ? [...state.likes, id] : state.likes.filter(item => item !== id);
       write("likes", state.likes); render(); return;
     }
     if (button.dataset.action === "save") {
       const id = button.dataset.postId;
-      state.saved = state.saved.includes(id) ? state.saved.filter(item => item !== id) : [...state.saved, id];
+      const saved = !state.saved.includes(id);
+      try { if (state.remote && isRemoteId(id)) await backend.setSaved(id, saved); }
+      catch (error) { toast(error.message); return; }
+      state.saved = saved ? [...state.saved, id] : state.saved.filter(item => item !== id);
       write("saved", state.saved); render(); toast(state.saved.includes(id) ? "Saved to your moments." : "Removed from saved moments."); return;
     }
     if (button.dataset.action === "comment") { root.querySelector(`[data-comment-form="${CSS.escape(button.dataset.postId)}"] input`)?.focus(); return; }
@@ -237,25 +426,44 @@
     }
     if (button.dataset.action === "delete-post") {
       const id = button.dataset.postId;
+      try { if (state.remote && isRemoteId(id)) await backend.deletePost(id); }
+      catch (error) { toast(error.message); return; }
       state.posts = state.posts.filter(post => post.id !== id);
       write("posts", state.posts); closeModal(); render(); toast("Your post has been deleted."); return;
     }
     if (button.dataset.action === "open-story") {
       const person = personFor(button.dataset.personId);
-      const story = button.dataset.personId === "maya" ? { image: state.profile.storyImage || person.image, type: state.profile.storyType, caption: state.profile.storyCaption || "A little hello from my day." } : data.stories.find(item => item.id === button.dataset.storyId);
-      const ownStory = button.dataset.personId === "maya" && Boolean(state.profile.storyImage);
+      const story = button.dataset.personId === state.myId
+        ? { image: state.profile.storyImage || person.image, type: state.profile.storyType, caption: state.profile.storyCaption || "A little hello from my day." }
+        : (state.remote ? state.remoteStories : data.stories).find(item => item.id === button.dataset.storyId);
+      const ownStory = button.dataset.personId === state.myId && Boolean(state.profile.storyImage);
       const storyMedia = story?.type === "video"
         ? `<video class="story-media" src="${photo(story.image)}" playsinline webkit-playsinline controls></video>`
         : `<img class="story-media" src="${photo(story?.image || person.image, 900)}" alt="">`;
       showModal(`<div class="story-viewer">${storyMedia}<div class="story-viewer-content"><div class="story-viewer-head">${avatar(person)}<strong>${escape(person.name)}</strong><button data-action="close-modal" aria-label="Close story">×</button></div><div><p>${escape(story?.caption || "")}</p>${ownStory ? '<button data-action="delete-story">Delete my story</button>' : `<button data-action="reply-story" data-person-id="${person.id}">Send a kind reply</button>`}</div></div></div>`, "Story"); return;
     }
     if (button.dataset.action === "delete-story") {
+      try {
+        if (state.remote && isRemoteId(state.profile.storyId)) await backend.deleteStory(state.profile.storyId);
+      } catch (error) { toast(error.message); return; }
       delete state.profile.storyImage;
       delete state.profile.storyCaption;
       delete state.profile.storyType;
+      delete state.profile.storyId;
       write("profile", state.profile); closeModal(); render(); toast("Your story has been deleted."); return;
     }
-    if (button.dataset.action === "reply-story") { const id = button.dataset.personId; closeModal(); state.selectedPerson = id; state.view = "messages"; render(); toast(`Your conversation with ${personFor(id).name} is ready.`); return; }
+    if (button.dataset.action === "reply-story") {
+      const id = button.dataset.personId;
+      try {
+        if (state.remote && isRemoteId(id)) {
+          const conversation = await backend.startConversation(id);
+          state.conversationIds[id] = conversation.id;
+          state.messages[id] ||= [];
+        }
+        closeModal(); state.selectedPerson = id; state.view = "messages"; render(); toast(`Your conversation with ${personFor(id).name} is ready.`);
+      } catch (error) { toast(error.message); }
+      return;
+    }
     if (button.dataset.action === "show-people") { showPeople(button.dataset.list); return; }
     if (button.dataset.action === "select-conversation") { state.selectedPerson = button.dataset.personId; render(); return; }
     if (button.dataset.action === "toggle-clip") {
@@ -282,7 +490,7 @@
     }
     if (event.target.matches("[data-global-search]")) {
       const query = event.target.value.trim().toLowerCase();
-      const matches = data.people.filter(person => person.id !== "maya" && `${person.name} ${person.occupation} ${person.city} ${person.interests.join(" ")}`.toLowerCase().includes(query));
+      const matches = communityPeople().filter(person => `${person.name} ${person.occupation} ${person.city} ${person.interests.join(" ")}`.toLowerCase().includes(query));
       modalRoot.querySelector(".search-suggestions").innerHTML = query ? matches.map(person => `<div class="profile-person-row">${avatar(person)}<span><strong>${escape(person.name)}</strong><small>${escape(person.occupation)} · ${escape(person.city)}</small></span><button class="text-button" data-action="hello" data-person-id="${person.id}">Say hello</button></div>`).join("") || "<p>No profiles match yet.</p>" : "<p>Try a name like Sofia or an interest like travel.</p>";
     }
   });
@@ -300,6 +508,34 @@
 
   document.addEventListener("submit", async event => {
     const form = event.target;
+    if (form.id === "account-form") {
+      event.preventDefault();
+      const error = form.querySelector(".upload-error");
+      const submit = form.querySelector('[type="submit"]');
+      error.hidden = true; submit.disabled = true;
+      try {
+        const details = {
+          email: form.elements.email.value.trim(),
+          password: form.elements.password.value
+        };
+        if (state.authMode === "signup") details.display_name = form.elements.display_name.value.trim();
+        const result = await backend[state.authMode === "signup" ? "signUp" : "signIn"](details);
+        if (!result.access_token) {
+          closeModal();
+          toast("Check your email to confirm your Blend account, then sign in.");
+          return;
+        }
+        await refreshRemoteState();
+        state.view = "home"; closeModal(); render();
+        toast(state.authMode === "signup" ? "Your Blend account is ready." : "Welcome back to Blend.");
+      } catch (exception) {
+        error.textContent = exception.message || "Could not connect your account.";
+        error.hidden = false;
+      } finally {
+        if (submit.isConnected) submit.disabled = false;
+      }
+      return;
+    }
     if (form.id === "create-form") {
       event.preventDefault();
       const submit = form.querySelector('[type="submit"]');
@@ -310,8 +546,26 @@
         if (!caption) throw new Error("Add a caption before sharing your post.");
         let image = "";
         if (form.elements.media.files[0]) image = await resizeImage(form.elements.media.files[0]);
-        const post = { id: `local-${Date.now()}`, person: "maya", image, caption, location: form.elements.location.value.trim(), audience: form.elements.audience.value, likes: 0, comments: 0, time: "Just now", tags: [] };
-        state.posts.unshift(post); write("posts", state.posts); closeModal(); state.view = "home"; render(); toast("Your moment has been shared.");
+        if (state.remote) {
+          let mediaPath = "";
+          let mediaUrl = "";
+          if (image) {
+            const uploaded = await backend.uploadMedia(image);
+            mediaPath = uploaded.path;
+            mediaUrl = uploaded.url;
+          }
+          const remotePost = await backend.createPost({
+            caption,
+            media_path: mediaPath,
+            location: form.elements.location.value.trim(),
+            audience: form.elements.audience.value
+          });
+          state.posts.push({ ...postFromRemote(remotePost), image: mediaUrl });
+        } else {
+          const post = { id: `local-${Date.now()}`, person: state.myId, image, caption, location: form.elements.location.value.trim(), audience: form.elements.audience.value, likes: 0, comments: 0, time: "Just now", tags: [] };
+          state.posts.unshift(post); write("posts", state.posts);
+        }
+        closeModal(); state.view = "home"; render(); toast("Your moment has been shared.");
       } catch (exception) { error.textContent = exception.message || "Could not share this moment."; error.hidden = false; }
       finally { if (submit.isConnected) submit.disabled = false; }
     }
@@ -320,7 +574,23 @@
       const error = form.querySelector(".upload-error");
       try {
         const mediaFile = form.elements.story.files[0];
-        const storyImage = await imageFromFile(mediaFile, true);
+        let storyImage = await imageFromFile(mediaFile, true);
+        if (state.remote) {
+          if (!storyImage) throw new Error("Choose a photo or video for your story.");
+          const uploaded = await backend.uploadMedia(storyImage);
+          const story = await backend.createStory({
+            media_path: uploaded.path,
+            media_type: uploaded.type,
+            caption: form.elements.caption.value.trim()
+          });
+          state.profile.storyId = story.id;
+          state.profile.storyImage = uploaded.url;
+          state.profile.storyPath = story.media_path;
+          state.profile.storyType = story.media_type;
+          state.profile.storyCaption = story.caption;
+          closeModal(); render(); toast("Your story is ready to view.");
+          return;
+        }
         if (storyImage) {
           state.profile.storyImage = storyImage;
           state.profile.storyType = mediaFile.type.startsWith("video/") ? "video" : "image";
@@ -334,8 +604,41 @@
       const error = form.querySelector(".upload-error");
       try {
         const formData = new FormData(form);
-        Object.assign(state.profile, { name: String(formData.get("name")).trim(), age: String(formData.get("age") || ""), occupation: String(formData.get("occupation") || "").trim(), city: String(formData.get("city") || "").trim(), bio: String(formData.get("bio") || "").trim() });
-        if (form.elements.photo.files[0]) state.profile.image = await resizeImage(form.elements.photo.files[0], 600);
+        const updatedProfile = {
+          name: String(formData.get("name")).trim(),
+          age: String(formData.get("age") || ""),
+          occupation: String(formData.get("occupation") || "").trim(),
+          city: String(formData.get("city") || "").trim(),
+          bio: String(formData.get("bio") || "").trim()
+        };
+        if (form.elements.photo.files[0]) {
+          let image = await resizeImage(form.elements.photo.files[0], 600);
+          if (state.remote) {
+            const uploaded = await backend.uploadMedia(image);
+            image = uploaded.url;
+            updatedProfile.avatarPath = uploaded.path;
+          }
+          updatedProfile.image = image;
+        }
+        if (state.remote) {
+          const savedProfile = await backend.updateProfile({
+            display_name: updatedProfile.name,
+            age: updatedProfile.age,
+            occupation: updatedProfile.occupation,
+            city: updatedProfile.city,
+            bio: updatedProfile.bio,
+            avatar_path: updatedProfile.avatarPath || state.profile.avatarPath,
+            intent: state.intent
+          });
+          Object.assign(updatedProfile, {
+            age: savedProfile.age || "",
+            image: savedProfile.avatar_url || "",
+            avatarPath: savedProfile.avatar_path || ""
+          });
+        }
+        Object.assign(state.profile, updatedProfile);
+        const me = data.people.find(person => person.id === state.myId);
+        if (me) Object.assign(me, { name: state.profile.name, age: state.profile.age, occupation: state.profile.occupation, city: state.profile.city, bio: state.profile.bio, image: state.profile.image });
         write("profile", state.profile); closeModal(); render(); toast("Your profile has been updated.");
       } catch (exception) { error.textContent = exception.message || "Could not update your profile."; error.hidden = false; }
     }
@@ -344,7 +647,10 @@
       const comment = form.querySelector("input").value.trim();
       if (!comment) return;
       const id = form.dataset.commentForm;
-      state.comments[id] = [...(state.comments[id] || []), comment];
+      try {
+        if (state.remote && isRemoteId(id)) await backend.createComment({ post_id: id, content: comment });
+      } catch (error) { toast(error.message); return; }
+      state.comments[id] = [...(state.comments[id] || []), state.remote ? { content: comment, author: state.profile.name.split(" ")[0] } : comment];
       write("comments", state.comments); render();
     }
     if (form.matches("[data-message-form]")) {
@@ -353,7 +659,18 @@
       const message = input.value.trim();
       if (!message) return;
       const id = form.dataset.messageForm;
-      state.messages[id] = [...messagesFor(id), message];
+      try {
+        if (state.remote && isRemoteId(id)) {
+          let conversationId = state.conversationIds[id];
+          if (!conversationId) {
+            const conversation = await backend.startConversation(id);
+            conversationId = conversation.id;
+            state.conversationIds[id] = conversationId;
+          }
+          await backend.sendMessage({ conversation_id: conversationId, content: message });
+        }
+      } catch (error) { toast(error.message); return; }
+      state.messages[id] = [...messagesFor(id), state.remote ? { content: message, mine: true } : message];
       write("messages", state.messages); render();
     }
   });
@@ -361,12 +678,32 @@
   document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
   document.querySelectorAll("[data-intent]").forEach(button => {
     button.classList.toggle("selected", button.dataset.intent === state.intent);
-    button.addEventListener("click", () => {
-      state.intent = button.dataset.intent;
-      write("intent", state.intent);
-      document.querySelectorAll("[data-intent]").forEach(option => option.classList.toggle("selected", option === button));
-      toast(`Your check-in is set to “${state.intent}”.`);
+    button.addEventListener("click", async () => {
+      try {
+        if (state.remote) {
+          await backend.updateProfile({
+            display_name: state.profile.name,
+            age: state.profile.age,
+            occupation: state.profile.occupation,
+            city: state.profile.city,
+            bio: state.profile.bio,
+            avatar_path: state.profile.avatarPath,
+            intent: button.dataset.intent
+          });
+        }
+        state.intent = button.dataset.intent;
+        write("intent", state.intent);
+        if (state.remote) state.profile.intent = state.intent;
+        document.querySelectorAll("[data-intent]").forEach(option => option.classList.toggle("selected", option === button));
+        toast(`Your check-in is set to “${state.intent}”.`);
+      } catch (error) { toast(error.message); }
     });
   });
   render();
+  if (backend.isAuthenticated) {
+    refreshRemoteState().catch(error => {
+      console.error("Could not restore the signed-in Blend account.", error);
+      toast(error.message || "Could not load your account.");
+    });
+  }
 })();

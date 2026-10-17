@@ -2,7 +2,7 @@
 
 Blend is a responsive front-end prototype for a more thoughtful social experience. Instead of a fast-paced scroll or a swipe-based dating flow, it creates a warm, human-first environment where people can share moments, explore meaningful connections, and move at a pace that feels comfortable.
 
-The experience blends social media, discovery, and personal curation into a single interface. Users can browse a home feed, view short stories, create new posts, meet people with shared interests, watch short vertical clips, send thoughtful messages, and edit their profile without needing a backend or account system.
+The experience blends social media, discovery, and personal curation into a single interface. Users can browse a home feed, view short stories, create new posts, meet people with shared interests, watch short vertical clips, send thoughtful messages, and edit their profile. The local demo works without an account; the optional Netlify + Supabase backend enables shared accounts and data.
 
 ## What this website is
 
@@ -47,7 +47,7 @@ The app presents a friendly, calming visual style and focuses on low-pressure in
 
 ## Technology
 
-Blend is built with plain HTML, CSS, and JavaScript, with no external runtime dependencies required. The app is served locally via a lightweight Node.js HTTP server and uses browser-side local storage to persist user-created content and preferences.
+Blend uses plain HTML, CSS, and JavaScript with a lightweight Node.js development server. Its optional shared backend uses Netlify Functions, Supabase Auth, a PostgreSQL database with row-level security, and Supabase Storage. Without Supabase configuration, the original local demo remains available and saves data in the current browser.
 
 ## Browser compatibility
 
@@ -64,18 +64,38 @@ Use a recent browser version for the best experience. If a browser does not supp
 The site is static and requires no build step. Deployment configuration is included for GitHub Pages, Netlify, and Vercel:
 
 - **GitHub Pages:** Push the `main` branch to GitHub and set **Settings → Pages → Build and deployment → Source** to **GitHub Actions**. The workflow deploys on each push to `main`. Once deployment succeeds, the project URL is `https://herlanpio.github.io/Blend/`.
-- **Netlify:** Import this GitHub repository as a new site. The included `netlify.toml` sets the publish directory to the repository root; leave the build command empty. Netlify will assign the public URL after deployment.
+- **Netlify:** Import this GitHub repository as a new site. The included `netlify.toml` publishes the site and deploys the `/api` function. Set the Supabase environment variables described below to enable shared accounts and data; without them, the site remains in local demo mode.
 - **Vercel:** Import this GitHub repository as a new project. The included `vercel.json` sets the output directory to the repository root; leave the build command empty. Vercel will assign the public URL after deployment.
 
-Each deployed URL works in supported browsers. The first deployment requires authorizing the chosen provider and connecting it to the GitHub repository. This demo has no backend, and browser-saved data is separate for each browser and device.
+Each deployed URL works in supported browsers. The first deployment requires authorizing the chosen provider and connecting it to the GitHub repository. The backend described below is configured for Netlify; GitHub Pages and Vercel deployments remain static demos.
+
+### Backend setup (Netlify + Supabase)
+
+The Netlify deployment includes an `/api` function endpoint. To enable real accounts and shared data:
+
+1. Create a Supabase project and copy its project URL and publishable/anon key.
+2. In the Supabase SQL editor, run [`supabase/migrations/202610160001_initial_schema.sql`](./supabase/migrations/202610160001_initial_schema.sql). It creates the profile, post, story, follow, like, bookmark, comment, conversation, and message tables, their row-level security policies, and the private media bucket.
+3. In Netlify, add `SUPABASE_URL` and `SUPABASE_ANON_KEY` as site environment variables, then redeploy.
+4. In Supabase Auth settings, configure the production site URL and allowed redirect URLs. Email confirmation can be enabled in the Supabase dashboard.
+5. Open the site and use **Account & sign in** to create an account or sign in. The API sends media using short-lived signed URLs; uploaded media is private and authorization follows the post/story visibility rules.
+
+For local development, copy `.env.example` to `.env`, set the same Supabase values, and run `npm run dev`:
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env with the project URL and publishable/anon key.
+npm run dev
+```
+
+Never put a Supabase service-role key in the browser or commit secrets. The backend is deployed only with the Netlify configuration; GitHub Pages and Vercel continue to host the static demo unless their own API deployments are configured.
+
+The backend provides email/password authentication, profile edits, posts and 24-hour stories, follows, likes, comments, saved posts, one-to-one messaging, and private photo/video uploads. This starter does not include live message delivery, password-reset UI, moderation tools, or clips persistence.
 
 ## Browser-only demo
 
-This project is intentionally a prototype. It includes illustrative profile data, demo conversations, and sample media. It does not include:
+Without backend credentials, the website runs in prototype mode with illustrative profile data, demo conversations, and sample media. The hosted Supabase mode stores user content centrally, but is still a starter rather than a fully production-hardened social network. It does not include:
 
-- real authentication or user accounts
-- a backend database or API
-- moderation, moderation workflows, or real matchmaking logic
+- moderation workflows or real matchmaking logic
 - production networking or live social integrations
 
 External sample photos, videos, and fonts are loaded from public sources and require an internet connection to render properly.
@@ -87,6 +107,12 @@ From the project folder:
 ```powershell
 cd C:\Users\Herlan\Documents\blend-app
 npm run dev
+```
+
+Run the API tests with:
+
+```powershell
+npm test
 ```
 
 If port 5173 is already in use, start the app on a different port:
