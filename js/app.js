@@ -8,6 +8,8 @@
   const backend = window.BlendBackend;
   const demoPeople = [...data.people];
   const storeKey = "blend.rebuilt.";
+  let currentStoryQueue = [];
+  let currentStoryIndex = 0;
   const read = (key, fallback) => {
     try { return JSON.parse(localStorage.getItem(storeKey + key)) ?? fallback; }
     catch (error) { console.warn(`Could not read ${key} from local storage.`, error); return fallback; }
@@ -37,18 +39,29 @@
     connections: read("connections", []),
     comments: read("comments", {}),
     messages: read("messages", {}),
-    intent: read("intent", "A real connection")
+    intent: read("intent", "A real connection"),
+    privacy: read("privacy", { discoverable: true, allowMessageRequests: true, defaultStoryAudience: "public" }),
+    blockedIds: read("blocked", [])
   };
 
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-  const personFor = id => data.people.find(person => person.id === id) || data.people[0];
+  const personFor = id => data.people.find(person => person.id === id) || {
+    id: id || "member",
+    name: "Blend member",
+    age: "",
+    occupation: "",
+    city: "",
+    bio: "",
+    image: "assets/blend-mark.svg",
+    interests: []
+  };
   const profileImage = () => state.profile.image || photo(personFor(state.myId).image, 160);
   function photo(source, width = 640) {
-    if (/^(https?:|data:|blob:)/i.test(source || "")) return escape(source);
+    if (/^(https?:|data:|blob:|assets\/)/i.test(source || "")) return escape(source);
     return `https://images.unsplash.com/${String(source || "").startsWith("photo-") ? source : `photo-${source}`}?auto=format&fit=crop&w=${width}&q=82`;
   }
   function avatar(person, size = 120) {
-    const src = person.id === state.myId ? profileImage() : photo(person.image, size);
+    const src = person.id === state.myId ? profileImage() : (person.image ? photo(person.image, size) : "assets/blend-mark.svg");
     return `<img class="avatar" src="${src}" alt="${escape(person.name)}" loading="lazy">`;
   }
   function toast(message) {
@@ -65,11 +78,14 @@
     modalRoot.querySelector(".modal-close").focus();
   }
   function closeModal() { modalRoot.innerHTML = ""; }
-  function allPosts() { return state.remote ? [...state.posts] : [...state.posts, ...data.posts]; }
+  function allPosts() {
+    const hidden = new Set(state.blockedIds);
+    return (state.remote ? [...state.posts] : [...state.posts, ...data.posts]).filter(post => !hidden.has(post.person));
+  }
   function communityPeople() {
     return state.remote
-      ? state.remoteProfiles.filter(person => person.id !== state.myId)
-      : data.people.filter(person => person.id !== state.myId);
+      ? state.remoteProfiles.filter(person => person.id !== state.myId && !state.blockedIds.includes(person.id))
+      : data.people.filter(person => person.id !== state.myId && !state.blockedIds.includes(person.id));
   }
   function profileFromRemote(profile) {
     return {
@@ -118,6 +134,12 @@
       remote: true
     };
     state.intent = ownProfile.intent || "A real connection";
+    state.privacy = {
+      discoverable: ownProfile.discoverable !== false,
+      allowMessageRequests: ownProfile.allow_message_requests !== false,
+      defaultStoryAudience: ownProfile.default_story_audience || "public"
+    };
+    state.blockedIds = remote.blockedIds || [];
     const remoteProfiles = remote.profiles.map(profileFromRemote);
     state.remoteProfiles = remoteProfiles;
     data.people = remoteProfiles;
@@ -188,6 +210,42 @@
     }
     showModal(`<span class="section-kicker">YOUR BLEND ACCOUNT</span><h2>Make your world yours.</h2><p class="modal-description">Sign in to keep your profile, stories, moments, and messages in sync across devices.</p><div class="auth-mode"><button class="${state.authMode !== "signup" ? "active" : ""}" data-action="auth-mode" data-mode="login">Sign in</button><button class="${state.authMode === "signup" ? "active" : ""}" data-action="auth-mode" data-mode="signup">Create account</button></div><form id="account-form" class="create-form">${state.authMode === "signup" ? '<label>Your name<input name="display_name" required maxlength="80" autocomplete="name"></label>' : ""}<label>Email<input name="email" type="email" required autocomplete="email"></label><label>Password<input name="password" type="password" required ${state.authMode === "signup" ? 'minlength="10"' : ""} autocomplete="${state.authMode === "signup" ? "new-password" : "current-password"}"></label><p class="upload-error" ${message ? "" : "hidden"}>${escape(message)}</p><button class="primary-button" type="submit">${state.authMode === "signup" ? "Create my account" : "Sign in"} ↗</button></form>`, "Sign in to Blend");
   }
+  function privacyModal() {
+    const audience = state.privacy.defaultStoryAudience || "public";
+    const blockedPeople = state.blockedIds.length
+      ? state.blockedIds.map(id => `<div class="profile-person-row">${avatar(personFor(id))}<span><strong>${escape(personFor(id).name)}</strong><small>Blocked account</small></span><button class="text-button" data-action="unblock-member" data-person-id="${escape(id)}">Unblock</button></div>`).join("")
+      : '<p class="empty-state">You haven’t blocked anyone.</p>';
+    showModal(`<span class="section-kicker">YOUR PRIVACY, YOUR PACE</span><h2>Privacy and safety.</h2><p class="modal-description">Choose how people can find you and what you share. Existing conversations can continue if you turn off new message requests.</p><form id="privacy-form" class="create-form"><label>Profile discoverability<select name="discoverable"><option value="true" ${state.privacy.discoverable ? "selected" : ""}>Show me in Discover</option><option value="false" ${state.privacy.discoverable ? "" : "selected"}>Hide me from Discover</option></select></label><label>New message requests<select name="allow_message_requests"><option value="true" ${state.privacy.allowMessageRequests ? "selected" : ""}>Allow new requests</option><option value="false" ${state.privacy.allowMessageRequests ? "" : "selected"}>Turn off new requests</option></select></label><label>Default story audience<select name="default_story_audience"><option value="public" ${audience === "public" ? "selected" : ""}>Everyone</option><option value="followers" ${audience === "followers" ? "selected" : ""}>My followers</option><option value="private" ${audience === "private" ? "selected" : ""}>Only me</option></select></label><p class="upload-error" hidden></p><button class="primary-button" type="submit">Save privacy settings ✓</button></form><section class="privacy-blocked"><span class="section-kicker">BLOCKED ACCOUNTS</span>${blockedPeople}</section>`, "Privacy and safety settings");
+  }
+  function memberOptionsModal(personId) {
+    const person = personFor(personId);
+    showModal(`<span class="section-kicker">YOUR SPACE, YOUR CHOICE</span><h2>${escape(person.name)}</h2><p class="modal-description">Choose what feels right for your experience on Blend.</p><button class="primary-button" data-action="report-profile" data-person-id="${escape(personId)}">Report profile</button><button class="text-button" data-action="confirm-block" data-person-id="${escape(personId)}" style="margin-top:12px">Block this account</button>`, "Member options");
+  }
+  function reportModal(targetType, targetId) {
+    if (!state.remote) {
+      showModal('<span class="section-kicker">A SAFER BLEND</span><h2>Sign in to report.</h2><p class="modal-description">Reports are submitted to Blend with a signed-in account.</p><button class="primary-button" data-action="account">Account & sign in</button>', "Report content");
+      return;
+    }
+    showModal(`<span class="section-kicker">HELP KEEP BLEND KIND</span><h2>Report this ${targetType}.</h2><form id="report-form" class="create-form" data-target-type="${escape(targetType)}" data-target-id="${escape(targetId)}"><label>What’s the concern?<select name="reason"><option value="spam">Spam</option><option value="harassment">Harassment or bullying</option><option value="inappropriate">Inappropriate content</option><option value="other">Something else</option></select></label><label>Anything else we should know?<textarea name="details" maxlength="1000" placeholder="Add a little context (optional)…"></textarea></label><p class="upload-error" hidden></p><button class="primary-button" type="submit">Send report</button></form>`, "Report content");
+  }
+  function blockConfirmModal(personId) {
+    const person = personFor(personId);
+    showModal(`<span class="section-kicker">YOU’RE IN CONTROL</span><h2>Block ${escape(person.name)}?</h2><p class="modal-description">They’ll be removed from your feed and discovery. You won’t see each other’s stories or be able to message.</p><button class="primary-button" data-action="block-member" data-person-id="${escape(personId)}">Block account</button><button class="text-button" data-action="close-modal" style="margin-top:10px">Keep them unblocked</button>`, "Block account");
+  }
+  function profileUpdatePayload(profile = state.profile, privacy = state.privacy, intent = state.intent) {
+    return {
+      display_name: profile.name,
+      age: profile.age,
+      occupation: profile.occupation,
+      city: profile.city,
+      bio: profile.bio,
+      avatar_path: profile.avatarPath || "",
+      intent,
+      discoverable: privacy.discoverable,
+      allow_message_requests: privacy.allowMessageRequests,
+      default_story_audience: privacy.defaultStoryAudience
+    };
+  }
   function suggestionCard(person) {
     const connected = state.connections.includes(person.id);
     return `<article class="suggestion-card">${avatar(person)}<strong>${escape(person.name)}</strong><small>${person.age} · ${escape(person.city)}</small><button class="primary-button" data-action="hello" data-person-id="${person.id}">${connected ? "Hello sent ✓" : "Say hello ♡"}</button></article>`;
@@ -200,8 +258,33 @@
   }
   function renderStories() {
     const ownStory = state.profile.storyImage ? { id: state.profile.storyId || "story-maya", image: state.profile.storyImage, type: state.profile.storyType, caption: state.profile.storyCaption } : { id: "story-maya", image: personFor(state.myId).image };
-    const otherStories = state.remote ? state.remoteStories : data.stories;
+    const otherStories = (state.remote ? state.remoteStories : data.stories)
+      .filter(story => !state.blockedIds.includes(story.person));
     return `<section class="content-card"><span class="section-kicker">LITTLE WINDOWS INTO THEIR DAY</span><div class="section-title-row"><h2 class="section-title">Stories <span>✿</span></h2><button class="subtle-button" data-action="create-story">＋ Add story</button></div><div class="story-list">${storyButton(ownStory, personFor(state.myId), true)}${otherStories.filter(story => story.person !== state.myId).map(story => storyButton(story, personFor(story.person))).join("")}</div></section>`;
+  }
+  function storyQueue() {
+    const ownStory = state.profile.storyImage
+      ? { id: state.profile.storyId || "story-maya", image: state.profile.storyImage, type: state.profile.storyType, caption: state.profile.storyCaption }
+      : { id: "story-maya", image: personFor(state.myId).image };
+    const otherStories = (state.remote ? state.remoteStories : data.stories)
+      .filter(story => story.person !== state.myId && !state.blockedIds.includes(story.person));
+    return [
+      { story: ownStory, personId: state.myId, own: Boolean(state.profile.storyImage) },
+      ...otherStories.map(story => ({ story, personId: story.person, own: false }))
+    ];
+  }
+  function showStoryAt(index) {
+    const item = currentStoryQueue[index];
+    if (!item) return;
+    currentStoryIndex = index;
+    const person = personFor(item.personId);
+    const storyMedia = item.story.type === "video"
+      ? `<video class="story-media" src="${photo(item.story.image)}" playsinline webkit-playsinline controls></video>`
+      : `<img class="story-media" src="${photo(item.story.image || person.image, 900)}" alt="">`;
+    const nextButton = index < currentStoryQueue.length - 1
+      ? '<button class="story-next-button" data-action="next-story" aria-label="View next story">›</button>'
+      : "";
+    showModal(`<div class="story-viewer">${storyMedia}<div class="story-viewer-content"><div class="story-viewer-head">${avatar(person)}<strong>${escape(person.name)}</strong><button data-action="close-modal" aria-label="Close story">×</button></div><div><p>${escape(item.story.caption || "")}</p>${item.own ? '<button data-action="delete-story">Delete my story</button>' : `<button data-action="reply-story" data-person-id="${escape(person.id)}">Send a kind reply</button>`}</div></div>${nextButton}</div>`, "Story");
   }
   function renderSuggestionPanel() {
     return `<section class="content-card"><div class="section-title-row"><div><span class="section-kicker">GOOD PEOPLE, WITH NO PRESSURE</span><h2 class="section-title">Profile suggestions</h2></div><button class="text-button" data-view="discover">Discover more ↗</button></div><div class="suggestion-grid">${communityPeople().slice(0, 3).map(suggestionCard).join("") || '<p class="empty-state">New people will appear here as they join Blend.</p>'}</div></section>`;
@@ -226,10 +309,11 @@
   function renderDiscover() {
     const query = state.query.trim().toLowerCase();
     const people = communityPeople().filter(person => !query || `${person.name} ${person.occupation} ${person.city} ${person.interests.join(" ")}`.toLowerCase().includes(query));
-    return `<div class="view-intro"><span class="section-kicker">GOOD ENERGY, NO SWIPING RUSH</span><p>Meet people who might feel like your kind of people. Take your time.</p></div><label class="search-field" aria-label="Search people">⌕<input data-discover-search type="search" value="${escape(state.query)}" placeholder="Search names, interests, places…"></label><div class="discover-grid" style="margin-top:15px">${people.length ? people.map(person => `<article class="person-card">${avatar(person, 600).replace('class="avatar"', 'class="person-cover"')}<div class="person-card-body"><h3>${escape(person.name)}, ${person.age}</h3><small>${escape(person.occupation)} · ${escape(person.city)}</small><p>${escape(person.bio)}</p><div class="interest-list">${person.interests.map(interest => `<span>${escape(interest)}</span>`).join("")}</div><button class="primary-button" data-action="hello" data-person-id="${person.id}">${state.connections.includes(person.id) ? "Hello sent ✓" : "Say hello ♡"}</button></div></article>`).join("") : '<p class="empty-state">No profiles match yet. Try another search.</p>'}</div>${renderSuggestionPanel()}`;
+    return `<div class="view-intro"><span class="section-kicker">GOOD ENERGY, NO SWIPING RUSH</span><p>Meet people who might feel like your kind of people. Take your time.</p></div><label class="search-field" aria-label="Search people">⌕<input data-discover-search type="search" value="${escape(state.query)}" placeholder="Search names, interests, places…"></label><div class="discover-grid" style="margin-top:15px">${people.length ? people.map(person => `<article class="person-card">${avatar(person, 600).replace('class="avatar"', 'class="person-cover"')}<div class="person-card-body"><h3>${escape(person.name)}, ${person.age}</h3><small>${escape(person.occupation)} · ${escape(person.city)}</small><p>${escape(person.bio)}</p><div class="interest-list">${person.interests.map(interest => `<span>${escape(interest)}</span>`).join("")}</div><button class="primary-button" data-action="hello" data-person-id="${person.id}">${state.connections.includes(person.id) ? "Hello sent ✓" : "Say hello ♡"}</button><button class="text-button" data-action="member-options" data-person-id="${escape(person.id)}">Safety options</button></div></article>`).join("") : '<p class="empty-state">No profiles match yet. Try another search.</p>'}</div>${renderSuggestionPanel()}`;
   }
   function renderClips() {
-    return `<div class="view-intro"><span class="section-kicker">SHORT MOMENTS, REAL PEOPLE</span><h2>Clips.</h2><p>Little films from people living their everyday stories.</p></div><div class="vignettes-list">${data.vignettes.map((clip, index) => {
+    const clips = data.vignettes.filter(clip => !state.blockedIds.includes(clip.person));
+    return `<div class="view-intro"><span class="section-kicker">SHORT MOMENTS, REAL PEOPLE</span><h2>Clips.</h2><p>Little films from people living their everyday stories.</p></div><div class="vignettes-list">${clips.map((clip, index) => {
       const person = personFor(clip.person);
       return `<article class="vignette-card" data-clip="${clip.id}"><img class="vignette-poster" src="${photo(clip.poster, 600)}" alt="" loading="lazy"><video class="vignette-video" src="${escape(clip.video)}" poster="${photo(clip.poster, 600)}" muted playsinline webkit-playsinline preload="none" aria-label="${escape(clip.caption)}"></video><div class="vignette-gradient"></div><div class="vignette-topline"><span>✳ A LITTLE FILM</span><span>UP TO 1 MIN · ${String(index + 1).padStart(2, "0")}</span></div><div class="vignette-copy"><button class="vignette-author" data-person="${person.id}">${avatar(person, 80)}<span><strong>${escape(person.name)}</strong><small>${escape(person.occupation)}</small></span></button><p>${escape(clip.caption)}</p><div>${clip.tags.map(tag => `#${escape(tag.replace(/\s/g, ""))} `).join("")}</div></div><div class="vignette-actions"><button class="vignette-action" data-action="toggle-clip" aria-label="Play or pause Clip"><span>▷</span><small>Play</small></button><button class="vignette-action" data-action="share" data-post-id="${clip.id}" aria-label="Share Clip"><span>↗</span><small>Share</small></button></div></article>`;
     }).join("")}</div>`;
@@ -303,7 +387,8 @@
     return `<span class="section-kicker">A MOMENT FROM YOUR WORLD</span><h2>Share what feels like you.</h2><p class="modal-description">Add media and a caption for your moment.</p><form id="create-form" class="create-form"><label class="media-picker"><span>Add media</span><input name="media" type="file" accept="image/*" capture="environment"></label><img class="post-preview" hidden alt="Photo preview"><button type="button" class="subtle-button" data-action="toggle-location">＋ Add location</button><label class="location-field" hidden>Place or city<input name="location" placeholder="Add a place or city"></label><label>Your caption<textarea name="caption" required maxlength="500" placeholder="A little piece of your day…"></textarea></label><label>Who gets to see this?<select name="audience"><option>Everyone</option><option>Connections only</option><option>Only me</option></select></label><p class="upload-error" hidden></p><button class="primary-button" type="submit">Share my moment ↗</button></form>`;
   }
   function openCreateStory() {
-    showModal(`<span class="section-kicker">LITTLE WINDOWS INTO YOUR DAY</span><h2>Add to your story.</h2><form id="story-form" class="create-form"><label>Choose a photo or video<input name="story" type="file" accept="image/*,video/*" capture="environment"></label><label>Say a little something<textarea name="caption" maxlength="180" placeholder="A little moment from today…"></textarea></label><p class="upload-error" hidden></p><button type="submit" class="primary-button">Share my story ✿</button></form>`, "Create a story");
+    const audience = state.privacy.defaultStoryAudience || "public";
+    showModal(`<span class="section-kicker">LITTLE WINDOWS INTO YOUR DAY</span><h2>Add to your story.</h2><form id="story-form" class="create-form"><label>Choose a photo or video<input name="story" type="file" accept="image/*,video/*" capture="environment"></label><label>Say a little something<textarea name="caption" maxlength="180" placeholder="A little moment from today…"></textarea></label><label>Who can see this story?<select name="audience"><option value="public" ${audience === "public" ? "selected" : ""}>Everyone</option><option value="followers" ${audience === "followers" ? "selected" : ""}>My followers</option><option value="private" ${audience === "private" ? "selected" : ""}>Only me</option></select></label><p class="upload-error" hidden></p><button type="submit" class="primary-button">Share my story ✿</button></form>`, "Create a story");
   }
   async function resizeImage(file, max = 1100) {
     if (!file.type.startsWith("image/")) throw new Error("Choose an image file.");
@@ -356,6 +441,7 @@
     if (button.dataset.filter) { state.filter = button.dataset.filter; render(); return; }
     if (button.dataset.action === "close-modal") { closeModal(); return; }
     if (button.dataset.action === "account") { state.authMode = "login"; accountModal(); return; }
+    if (button.dataset.action === "privacy") { privacyModal(); return; }
     if (button.dataset.action === "auth-mode") { state.authMode = button.dataset.mode; accountModal(); return; }
     if (button.dataset.action === "sign-out") {
       try {
@@ -376,6 +462,8 @@
         state.comments = read("comments", {});
         state.messages = read("messages", {});
         state.intent = read("intent", "A real connection");
+        state.privacy = read("privacy", { discoverable: true, allowMessageRequests: true, defaultStoryAudience: "public" });
+        state.blockedIds = read("blocked", []);
         state.view = "home";
         closeModal(); render(); toast("You have signed out.");
       } catch (error) { accountModal(error.message); }
@@ -392,8 +480,8 @@
       if (state.connections.includes(id)) { toast("You have already sent a hello."); return; }
       try {
         if (state.remote && isRemoteId(id)) {
-          await backend.setFollowing(id, true);
           const conversation = await backend.startConversation(id);
+          await backend.setFollowing(id, true);
           state.conversationIds[id] = conversation.id;
           state.messages[id] ||= [];
         }
@@ -422,7 +510,54 @@
     if (button.dataset.action === "post-options") {
       const id = button.dataset.postId;
       const ownPost = state.posts.some(post => post.id === id);
-      showModal(`<span class="section-kicker">A LITTLE NOTE</span><h2>Post options</h2><button class="primary-button" data-action="save" data-post-id="${escape(id)}">Save or remove saved post</button>${ownPost ? `<button class="text-button" data-action="delete-post" data-post-id="${escape(id)}" style="margin:10px 0;color:#a34f58">Delete my post</button>` : ""}<p class="modal-description" style="margin-top:14px">Reports are not connected to a moderation service in this demo.</p><button class="text-button" data-action="close-modal">Close</button>`, "Post options"); return;
+      const post = allPosts().find(item => item.id === id);
+      const authorId = post?.person || "";
+      showModal(`<span class="section-kicker">A LITTLE NOTE</span><h2>Post options</h2><button class="primary-button" data-action="save" data-post-id="${escape(id)}">Save or remove saved post</button>${ownPost ? `<button class="text-button" data-action="delete-post" data-post-id="${escape(id)}" style="margin:10px 0;color:#a34f58">Delete my post</button>` : `<button class="text-button" data-action="report-post" data-post-id="${escape(id)}" style="margin-top:10px">Report this post</button><button class="text-button" data-action="confirm-block" data-person-id="${escape(authorId)}" style="margin-top:10px">Block ${escape(personFor(authorId).name)}</button>`}<button class="text-button" data-action="close-modal" style="margin-top:10px">Close</button>`, "Post options"); return;
+    }
+    if (button.dataset.action === "member-options") { memberOptionsModal(button.dataset.personId); return; }
+    if (button.dataset.action === "report-profile") { reportModal("profile", button.dataset.personId); return; }
+    if (button.dataset.action === "report-post") {
+      const post = allPosts().find(item => item.id === button.dataset.postId);
+      if (post) reportModal("post", post.id);
+      return;
+    }
+    if (button.dataset.action === "confirm-block") { blockConfirmModal(button.dataset.personId); return; }
+    if (button.dataset.action === "block-member") {
+      const id = button.dataset.personId;
+      try {
+        if (state.remote) {
+          await backend.blockMember(id);
+          closeModal();
+          await refreshRemoteState();
+        } else {
+          state.blockedIds = [...new Set([...state.blockedIds, id])];
+          state.connections = state.connections.filter(personId => personId !== id);
+          state.followers = state.followers.filter(personId => personId !== id);
+          delete state.messages[id]; delete state.conversationIds[id];
+          write("blocked", state.blockedIds); write("connections", state.connections);
+          write("followers", state.followers); write("messages", state.messages);
+          if (state.selectedPerson === id) state.selectedPerson = communityPeople()[0]?.id || "";
+          closeModal(); render();
+        }
+        toast(`${personFor(id).name} has been blocked.`);
+      } catch (error) { toast(error.message || "Could not block this account."); }
+      return;
+    }
+    if (button.dataset.action === "unblock-member") {
+      const id = button.dataset.personId;
+      const displayName = personFor(id).name;
+      try {
+        if (state.remote) {
+          await backend.unblockMember(id);
+          closeModal();
+          await refreshRemoteState();
+        } else {
+          state.blockedIds = state.blockedIds.filter(personId => personId !== id);
+          write("blocked", state.blockedIds); closeModal(); render();
+        }
+        toast(`${displayName} has been unblocked.`);
+      } catch (error) { toast(error.message || "Could not unblock this account."); }
+      return;
     }
     if (button.dataset.action === "delete-post") {
       const id = button.dataset.postId;
@@ -432,16 +567,12 @@
       write("posts", state.posts); closeModal(); render(); toast("Your post has been deleted."); return;
     }
     if (button.dataset.action === "open-story") {
-      const person = personFor(button.dataset.personId);
-      const story = button.dataset.personId === state.myId
-        ? { image: state.profile.storyImage || person.image, type: state.profile.storyType, caption: state.profile.storyCaption || "A little hello from my day." }
-        : (state.remote ? state.remoteStories : data.stories).find(item => item.id === button.dataset.storyId);
-      const ownStory = button.dataset.personId === state.myId && Boolean(state.profile.storyImage);
-      const storyMedia = story?.type === "video"
-        ? `<video class="story-media" src="${photo(story.image)}" playsinline webkit-playsinline controls></video>`
-        : `<img class="story-media" src="${photo(story?.image || person.image, 900)}" alt="">`;
-      showModal(`<div class="story-viewer">${storyMedia}<div class="story-viewer-content"><div class="story-viewer-head">${avatar(person)}<strong>${escape(person.name)}</strong><button data-action="close-modal" aria-label="Close story">×</button></div><div><p>${escape(story?.caption || "")}</p>${ownStory ? '<button data-action="delete-story">Delete my story</button>' : `<button data-action="reply-story" data-person-id="${person.id}">Send a kind reply</button>`}</div></div></div>`, "Story"); return;
+      currentStoryQueue = storyQueue();
+      currentStoryIndex = currentStoryQueue.findIndex(item => item.story.id === button.dataset.storyId && item.personId === button.dataset.personId);
+      if (currentStoryIndex < 0) return;
+      showStoryAt(currentStoryIndex); return;
     }
+    if (button.dataset.action === "next-story") { showStoryAt(currentStoryIndex + 1); return; }
     if (button.dataset.action === "delete-story") {
       try {
         if (state.remote && isRemoteId(state.profile.storyId)) await backend.deleteStory(state.profile.storyId);
@@ -508,6 +639,51 @@
 
   document.addEventListener("submit", async event => {
     const form = event.target;
+    if (form.id === "report-form") {
+      event.preventDefault();
+      const error = form.querySelector(".upload-error");
+      const submit = form.querySelector('[type="submit"]');
+      error.hidden = true; submit.disabled = true;
+      try {
+        await backend.createReport({
+          target_type: form.dataset.targetType,
+          target_id: form.dataset.targetId,
+          reason: form.elements.reason.value,
+          details: form.elements.details.value.trim()
+        });
+        closeModal(); toast("Thanks. Your report has been recorded.");
+      } catch (exception) {
+        error.textContent = exception.message || "Could not send your report.";
+        error.hidden = false;
+      } finally { if (submit.isConnected) submit.disabled = false; }
+      return;
+    }
+    if (form.id === "privacy-form") {
+      event.preventDefault();
+      const error = form.querySelector(".upload-error");
+      const submit = form.querySelector('[type="submit"]');
+      const privacy = {
+        discoverable: form.elements.discoverable.value === "true",
+        allowMessageRequests: form.elements.allow_message_requests.value === "true",
+        defaultStoryAudience: form.elements.default_story_audience.value
+      };
+      error.hidden = true; submit.disabled = true;
+      try {
+        if (state.remote) {
+          const saved = await backend.updateProfile(profileUpdatePayload(state.profile, privacy));
+          privacy.discoverable = saved.discoverable !== false;
+          privacy.allowMessageRequests = saved.allow_message_requests !== false;
+          privacy.defaultStoryAudience = saved.default_story_audience || "public";
+        }
+        state.privacy = privacy;
+        write("privacy", state.privacy);
+        closeModal(); render(); toast("Your privacy settings have been saved.");
+      } catch (exception) {
+        error.textContent = exception.message || "Could not save your privacy settings.";
+        error.hidden = false;
+      } finally { if (submit.isConnected) submit.disabled = false; }
+      return;
+    }
     if (form.id === "account-form") {
       event.preventDefault();
       const error = form.querySelector(".upload-error");
@@ -581,7 +757,8 @@
           const story = await backend.createStory({
             media_path: uploaded.path,
             media_type: uploaded.type,
-            caption: form.elements.caption.value.trim()
+            caption: form.elements.caption.value.trim(),
+            audience: form.elements.audience.value
           });
           state.profile.storyId = story.id;
           state.profile.storyImage = uploaded.url;
@@ -596,6 +773,7 @@
           state.profile.storyType = mediaFile.type.startsWith("video/") ? "video" : "image";
         }
         state.profile.storyCaption = form.elements.caption.value.trim();
+        state.profile.storyAudience = form.elements.audience.value;
         write("profile", state.profile); closeModal(); render(); toast("Your story is ready to view.");
       } catch (exception) { error.textContent = exception.message || "Could not add this story."; error.hidden = false; }
     }
@@ -628,7 +806,10 @@
             city: updatedProfile.city,
             bio: updatedProfile.bio,
             avatar_path: updatedProfile.avatarPath || state.profile.avatarPath,
-            intent: state.intent
+            intent: state.intent,
+            discoverable: state.privacy.discoverable,
+            allow_message_requests: state.privacy.allowMessageRequests,
+            default_story_audience: state.privacy.defaultStoryAudience
           });
           Object.assign(updatedProfile, {
             age: savedProfile.age || "",
@@ -675,21 +856,19 @@
     }
   });
 
-  document.addEventListener("keydown", event => { if (event.key === "Escape") closeModal(); });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeModal();
+    else if (event.key === "ArrowRight" && !event.repeat && modalRoot.querySelector(".story-viewer")) {
+      event.preventDefault();
+      showStoryAt(currentStoryIndex + 1);
+    }
+  });
   document.querySelectorAll("[data-intent]").forEach(button => {
     button.classList.toggle("selected", button.dataset.intent === state.intent);
     button.addEventListener("click", async () => {
       try {
         if (state.remote) {
-          await backend.updateProfile({
-            display_name: state.profile.name,
-            age: state.profile.age,
-            occupation: state.profile.occupation,
-            city: state.profile.city,
-            bio: state.profile.bio,
-            avatar_path: state.profile.avatarPath,
-            intent: button.dataset.intent
-          });
+          await backend.updateProfile(profileUpdatePayload(state.profile, state.privacy, button.dataset.intent));
         }
         state.intent = button.dataset.intent;
         write("intent", state.intent);

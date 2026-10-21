@@ -74,7 +74,8 @@ Each deployed URL works in supported browsers. The first deployment requires aut
 The Netlify deployment includes an `/api` function endpoint. To enable real accounts and shared data:
 
 1. Create a Supabase project and copy its project URL and publishable/anon key.
-2. In the Supabase SQL editor, run [`supabase/migrations/202610160001_initial_schema.sql`](./supabase/migrations/202610160001_initial_schema.sql). It creates the profile, post, story, follow, like, bookmark, comment, conversation, and message tables, their row-level security policies, and the private media bucket.
+2. In the Supabase SQL editor, run the files in [`supabase/migrations`](./supabase/migrations) in filename order. The initial migration creates the profile, post, story, follow, like, bookmark, comment, conversation, and message tables, their row-level security policies, and the private media bucket. The privacy migration adds profile discoverability, message-request controls, per-story audience rules, account blocking, and report storage.
+   If your project already ran the initial migration, run only [`202610200001_privacy_controls.sql`](./supabase/migrations/202610200001_privacy_controls.sql).
 3. In Netlify, add `SUPABASE_URL` and `SUPABASE_ANON_KEY` as site environment variables, then redeploy.
 4. In Supabase Auth settings, configure the production site URL and allowed redirect URLs. Email confirmation can be enabled in the Supabase dashboard.
 5. Open the site and use **Account & sign in** to create an account or sign in. The API sends media using short-lived signed URLs; uploaded media is private and authorization follows the post/story visibility rules.
@@ -89,7 +90,7 @@ npm run dev
 
 Never put a Supabase service-role key in the browser or commit secrets. The backend is deployed only with the Netlify configuration; GitHub Pages and Vercel continue to host the static demo unless their own API deployments are configured.
 
-The backend provides email/password authentication, profile edits, posts and 24-hour stories, follows, likes, comments, saved posts, one-to-one messaging, and private photo/video uploads. This starter does not include live message delivery, password-reset UI, moderation tools, or clips persistence.
+The backend provides email/password authentication, profile edits, profile discoverability controls, message-request controls, posts and 24-hour stories with audience settings, follows, likes, comments, saved posts, one-to-one messaging, account blocking, report submission, and private photo/video uploads. Reports are stored for review, but this starter does not include a moderation review dashboard, live message delivery, password-reset UI, or clips persistence.
 
 ## Browser-only demo
 
@@ -97,6 +98,8 @@ Without backend credentials, the website runs in prototype mode with illustrativ
 
 - moderation workflows or real matchmaking logic
 - production networking or live social integrations
+
+Privacy settings and blocked accounts in the browser-only demo are saved in that browser. Reporting requires a signed-in Supabase account; reports are stored in the database, with no review dashboard in this starter.
 
 External sample photos, videos, and fonts are loaded from public sources and require an internet connection to render properly.
 

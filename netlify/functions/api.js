@@ -4,6 +4,7 @@ const { randomUUID } = require("node:crypto");
 
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
 const PROFILE_SELECT = "id,display_name,age,occupation,city,bio,avatar_url,intent";
+const OWN_PROFILE_SELECT = `${PROFILE_SELECT},discoverable,allow_message_requests,default_story_audience`;
 
 function response(statusCode, payload) {
   return {
@@ -139,9 +140,14 @@ async function bootstrap(config, token, user) {
       select: `conversation_id,profile:profiles!conversation_members_profile_id_fkey(${PROFILE_SELECT})`,
       profile_id: `eq.${user.id}`,
       limit: "100"
+    }),
+    database(config, token, "member_blocks", "GET", {
+      select: "blocked_id",
+      blocker_id: `eq.${user.id}`,
+      limit: "500"
     })
   ];
-  const [profiles, posts, stories, likes, bookmarks, follows, comments, memberships] = await Promise.all(queries);
+  const [profiles, posts, stories, likes, bookmarks, follows, comments, memberships, blocks] = await Promise.all(queries);
   const conversationIds = memberships.map(item => item.conversation_id);
   const messages = conversationIds.length
     ? await database(config, token, "messages", "GET", {
@@ -152,12 +158,12 @@ async function bootstrap(config, token, user) {
     })
     : [];
   const [profile] = await database(config, token, "profiles", "GET", {
-    select: PROFILE_SELECT,
+    select: OWN_PROFILE_SELECT,
     id: `eq.${user.id}`,
     limit: "1"
   });
   const mediaPaths = [...new Set([
-    ...profiles.map(item => item.avatar_url),
+    ...profiles.filter(item => !blocks.some(block => block.blocked_id === item.id)).map(item => item.avatar_url),
     ...posts.map(item => item.media_url),
     ...stories.map(item => item.media_url),
     profile?.avatar_url
@@ -166,7 +172,7 @@ async function bootstrap(config, token, user) {
   const signProfile = item => ({
     ...item,
     avatar_path: item.avatar_url,
-    avatar_url: signedMedia.get(item.avatar_url) || ""
+    avatar_url: blocks.some(block => block.blocked_id === item.id) ? "" : signedMedia.get(item.avatar_url) || ""
   });
   const signPost = item => ({
     ...item,
@@ -187,6 +193,7 @@ async function bootstrap(config, token, user) {
     likedPostIds: likes.map(item => item.post_id),
     savedPostIds: bookmarks.map(item => item.post_id),
     follows,
+    blockedIds: blocks.map(block => block.blocked_id),
     comments,
     conversations: memberships.map(item => ({
       id: item.conversation_id,
@@ -279,13 +286,26 @@ async function route(event, config, token, user, body) {
       avatar_url: ownedMediaPath(body.avatar_path, user.id),
       intent: body.intent || "A real connection"
     };
+    if (body.discoverable !== undefined) {
+      if (typeof body.discoverable !== "boolean") throw new HttpError(400, "Choose a valid profile visibility setting.");
+      profile.discoverable = body.discoverable;
+    }
+    if (body.allow_message_requests !== undefined) {
+      if (typeof body.allow_message_requests !== "boolean") throw new HttpError(400, "Choose a valid message request setting.");
+      profile.allow_message_requests = body.allow_message_requests;
+    }
+    if (body.default_story_audience !== undefined) {
+      const audience = ({ Everyone: "public", "Connections only": "followers", "Only me": "private" })[body.default_story_audience] || body.default_story_audience;
+      if (!["public", "followers", "private"].includes(audience)) throw new HttpError(400, "Choose a valid default story audience.");
+      profile.default_story_audience = audience;
+    }
     if (profile.age !== null && (!Number.isInteger(profile.age) || profile.age < 18 || profile.age > 120)) {
       throw new HttpError(400, "Age must be between 18 and 120.");
     }
     if (!["A real connection", "New friends", "Just exploring"].includes(profile.intent)) {
       throw new HttpError(400, "Choose a valid connection intention.");
     }
-    const [updated] = await database(config, token, "profiles", "PATCH", { id: `eq.${user.id}`, select: PROFILE_SELECT }, profile);
+    const [updated] = await database(config, token, "profiles", "PATCH", { id: `eq.${user.id}`, select: OWN_PROFILE_SELECT }, profile);
     return {
       ...updated,
       avatar_path: updated.avatar_url,
@@ -349,14 +369,55 @@ async function route(event, config, token, user, body) {
     await database(config, token, "follows", "DELETE", { follower_id: `eq.${user.id}`, followee_id: `eq.${id}` });
     return { following: false };
   }
+  if (action === "safety.block" && method === "POST") {
+    const profileId = requiredUuid(body.profile_id, "Profile");
+    if (profileId === user.id) throw new HttpError(400, "You cannot block your own profile.");
+    await supabaseRequest(config, "/rest/v1/rpc/block_member", {
+      method: "POST",
+      token,
+      body: { other_profile: profileId }
+    });
+    return { blocked: true };
+  }
+  if (action === "safety.block" && method === "DELETE" && id) {
+    const profileId = requiredUuid(id, "Profile");
+    await database(config, token, "member_blocks", "DELETE", {
+      blocker_id: `eq.${user.id}`,
+      blocked_id: `eq.${profileId}`
+    });
+    return { blocked: false };
+  }
+  if (action === "reports.create" && method === "POST") {
+    const targetType = body.target_type;
+    if (!["profile", "post"].includes(targetType)) throw new HttpError(400, "Choose a valid report target.");
+    const reason = body.reason;
+    if (!["spam", "harassment", "inappropriate", "other"].includes(reason)) throw new HttpError(400, "Choose a valid report reason.");
+    const targetId = requiredUuid(body.target_id, "Report target");
+    await supabaseRequest(config, restPath("content_reports"), {
+      method: "POST",
+      token,
+      body: {
+        reporter_id: user.id,
+        reported_profile_id: targetType === "profile" ? targetId : null,
+        reported_post_id: targetType === "post" ? targetId : null,
+        reason,
+        details: String(body.details || "").trim().slice(0, 1000)
+      },
+      headers: { Prefer: "return=minimal" }
+    });
+    return { submitted: true };
+  }
   if (action === "stories.create" && method === "POST") {
+    const audience = ({ Everyone: "public", "Connections only": "followers", "Only me": "private" })[body.audience] || body.audience || "public";
+    if (!["public", "followers", "private"].includes(audience)) throw new HttpError(400, "Choose a valid story audience.");
     const [story] = await database(config, token, "stories", "POST", {
       select: `*,author:profiles!stories_author_id_fkey(${PROFILE_SELECT})`
     }, {
       author_id: user.id,
       caption: String(body.caption || "").trim().slice(0, 180),
       media_url: ownedMediaPath(requiredText(body.media_path, "Story media", 2048), user.id),
-      media_type: body.media_type === "video" ? "video" : "image"
+      media_type: body.media_type === "video" ? "video" : "image",
+      audience
     });
     return {
       ...story,
@@ -456,6 +517,13 @@ function validatePassword(password) {
     throw new HttpError(400, "Enter a valid password.");
   }
   return password;
+}
+
+function requiredUuid(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new HttpError(400, `${label} is invalid.`);
+  }
+  return value;
 }
 
 exports.handler = handler;
